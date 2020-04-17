@@ -1,5 +1,11 @@
 # Residual Flows for Invertible Generative Modeling 
 
+- Flow-based generative models parameterize probability distributions through an
+invertible transformation and can be trained by maximum likelihood. Invertible
+residual networks provide a flexible family of transformations where only Lipschitz
+conditions rather than strict architectural constraints are needed for enforcing
+invertibility.
+- This application concerns the invertible mapping of the color information in histopathology Whole Slide Image patches
 
 ## Requirements
 
@@ -12,6 +18,12 @@ pip install requirements.txt
 
 
 ## Preprocessing
+
+CAMELYON17 256 x 256:
+```
+See Examode preprocessing
+```
+
 ImageNet:
 1. Follow instructions in `preprocessing/create_imagenet_benchmark_datasets`.
 2. Convert .npy files to .pth using `preprocessing/convert_to_pth`.
@@ -31,10 +43,7 @@ tar -C data/celebahq -xvf celeb-tfr.tar
 python extract_celeba_from_tfrecords
 ```
 
-CAMELYON17 256 x 256:
-```
-See Examode preprocessing
-```
+
 
 ## Density Estimation Experiments
 
