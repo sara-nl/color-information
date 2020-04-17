@@ -3,7 +3,13 @@
 
 ## Requirements
 
-- See requirements.txt
+```
+module use ~/environment-modules-lisa
+module load 2020
+module load TensorFlow/2.1.0-foss-2019b-Python-3.7.4-CUDA-10.1.243
+pip install requirements.txt
+```
+
 
 ## Preprocessing
 ImageNet:
@@ -26,15 +32,15 @@ python extract_celeba_from_tfrecords
 ```
 
 CAMELYON17 256 x 256:
-'''
+```
 See Examode preprocessing
-'''
+```
 
 ## Density Estimation Experiments
 
 CAMELYON17 256 x 256
 
-'''
+```
 python train_img.py \
  --data custom \
  --dataset 17 \
@@ -55,8 +61,7 @@ python train_img.py \
  --squeeze-first True \
  --save experiments/examode256 \
  --nblocks 16-16-16
- 
-'''
+ ```
 
 MNIST:
 ```
