@@ -1,7 +1,7 @@
 import math
 import torch
 from torch.optim.optimizer import Optimizer
-
+import pdb
 
 class Adam(Optimizer):
     """Implements Adam algorithm.
@@ -54,7 +54,6 @@ class Adam(Optimizer):
         loss = None
         if closure is not None:
             loss = closure()
-
         for group in self.param_groups:
             for p in group['params']:
                 if p.grad is None:
@@ -98,8 +97,11 @@ class Adam(Optimizer):
                 bias_correction1 = 1 - beta1**state['step']
                 bias_correction2 = 1 - beta2**state['step']
                 step_size = group['lr'] * math.sqrt(bias_correction2) / bias_correction1
-
+                
                 p.data.addcdiv_(-step_size, exp_avg, denom)
+                # Custom
+                # p.data = p.data.add(-exp_avg)
+                
 
                 if group['weight_decay'] != 0:
                     p.data.add(-step_size * group['weight_decay'], p.data)
@@ -180,9 +182,8 @@ class Adamax(Optimizer):
 
                 bias_correction = 1 - beta1**state['step']
                 clr = group['lr'] / bias_correction
-
                 p.data.addcdiv_(-clr, exp_avg, exp_inf)
-
+                
                 if group['weight_decay'] != 0:
                     p.data.add(-clr * group['weight_decay'], p.data)
 

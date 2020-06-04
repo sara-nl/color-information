@@ -6,6 +6,7 @@ import os.path
 import numpy as np
 from tqdm import tqdm
 import gc
+import sys
 import pdb
 from glob import glob
 from sklearn.utils import shuffle
@@ -25,31 +26,31 @@ from lib.resflow import ACT_FNS, ResidualFlow
 import lib.datasets as datasets
 import lib.optimizers as optim
 import lib.utils as utils
+from lib.GMM import GMM_model as gmm
+import lib.image_transforms as imgtf
 import lib.layers as layers
 import lib.layers.base as base_layers
 from lib.lr_scheduler import CosineAnnealingWarmRestarts
 
 
 """
-TODO: Check where input becomes float64, recast to float32
+TODO:
+
 
 """
 # Arguments
 parser = argparse.ArgumentParser(description='Residual Flow Model', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument(
-    '--data', type=str, default='cifar10', choices=[
-        'mnist',
-        'cifar10',
-        'svhn',
-        'celebahq',
-        'celeba_5bit',
-        'imagenet32',
-        'imagenet64',
+    '--data', type=str, default='custom', choices=[
         'custom'
     ]
 )
 # mnist
 parser.add_argument('--dataroot', type=str, default='data')
+## GMM ##
+parser.add_argument('--nclusters', type=int, default=4)
+parser.add_argument('--gmmsteps', type=int, default=100)  # Only gmm 
+
 ## CAMELYON ##
 parser.add_argument('--dataset', type=str, default="17", help='Which dataset to use. "16" for CAMELYON16 or "17" for CAMELYON17')
 parser.add_argument('--train_centers', nargs='+', default=[-1], type=int, help='Centers for training. Use -1 for all, otherwise 2 3 4 eg.')
@@ -114,7 +115,7 @@ parser.add_argument('--seed', type=int, default=None)
 parser.add_argument('--ema-val', type=eval, choices=[True, False], default=True)
 parser.add_argument('--update-freq', type=int, default=1)
 
-parser.add_argument('--task', type=str, choices=['density', 'classification', 'hybrid'], default='density')
+parser.add_argument('--task', type=str, choices=['density', 'classification', 'hybrid','gmm'], default='gmm')
 parser.add_argument('--scale-dim', type=eval, choices=[True, False], default=False)
 parser.add_argument('--rcrop-pad-mode', type=str, choices=['constant', 'reflect'], default='reflect')
 parser.add_argument('--padding-dist', type=str, choices=['uniform', 'gaussian'], default='uniform')
@@ -122,9 +123,9 @@ parser.add_argument('--padding-dist', type=str, choices=['uniform', 'gaussian'],
 parser.add_argument('--resume', type=str, default=None)
 parser.add_argument('--begin-epoch', type=int, default=0)
 
-parser.add_argument('--nworkers', type=int, default=4)
-parser.add_argument('--print-freq', help='Print progress every so iterations', type=int, default=20)
-parser.add_argument('--vis-freq', help='Visualize progress every so iterations', type=int, default=500)
+parser.add_argument('--nworkers', type=int, default=8)
+parser.add_argument('--print-freq', help='Print progress every so iterations', type=int, default=1)
+parser.add_argument('--vis-freq', help='Visualize progress every so iterations', type=int, default=5)
 args = parser.parse_args()
 
 # Random seed
@@ -152,6 +153,8 @@ if device.type == 'cuda':
     torch.cuda.manual_seed(args.seed)
 
 
+
+
 def geometric_logprob(ns, p):
     return torch.log(1 - p + 1e-10) * (ns - 1) + torch.log(p + 1e-10)
 
@@ -177,6 +180,21 @@ def normal_logprob(z, mean, log_std):
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
+def rescale(tensor):
+    """
+    Parameters
+    ----------
+    tensor : Pytorch tensor
+        Tensor to be rescaled to [0,1] interval.
+
+    Returns
+    -------
+    Rescaled tensor.
+
+    """
+    tensor -= tensor.min()
+    tensor /= tensor.max()
+    return tensor
 
 def reduce_bits(x):
     if args.nbits < 8:
@@ -258,7 +276,7 @@ def load_camelyon_16(args):
     """  Load the camelyon16 dataset """
     image_list = [x for x in sorted(glob(str(args.train_path) + '/*', recursive=True)) if 'mask' not in x]
     mask_list = [x for x in sorted(glob(str(args.train_path) + '/*', recursive=True)) if 'mask' in x]
-
+    
     if args.debug:
         image_list, mask_list = shuffle(image_list[:5], mask_list[:5])
     else:
@@ -292,11 +310,11 @@ def load_camelyon17(args):
     image_list = [x for c in args.train_centers for x in sorted(glob(str(args.train_path).replace('center_XX', f'center_{c}') + f'/patches_positive_{args.imagesize}/*', recursive=True)) if 'mask' not in x]
     
     mask_list = [x for c in args.train_centers for x in sorted(glob(str(args.train_path).replace('center_XX', f'center_{c}') + f'/patches_positive_{args.imagesize}/*', recursive=True)) if'mask' in x]
-
     if args.debug:
         image_list, mask_list = shuffle(image_list[:5], mask_list[:5])
     else:
-        image_list, mask_list = shuffle(image_list, mask_list)
+        image_list, mask_list = image_list, mask_list
+        # image_list, mask_list = shuffle(image_list, mask_list)
     
     sample_weight_list = [1.0] * len(image_list)
 
@@ -327,25 +345,24 @@ def load_camelyon17(args):
                          sorted(glob(args.valid_path.replace('center_XX', f'center_{c}') + f'/patches_positive_{args.imagesize}/*', recursive=True)) if
                          'mask' in x]
         
-        if args.debug:
-            val_image_list, val_mask_list = val_image_list[:5], val_mask_list[:5]
+        # if args.debug:
+        #     val_image_list, val_mask_list = val_image_list[:5], val_mask_list[:5]
             
-        # idx = [np.asarray(Image.open(x))[:, :, 0] / 255 for x in val_mask_list]
-        idx = get_valid_idx(val_mask_list)
-        num_pixels = args.imagesize ** 2
-        valid_idx = [((num_pixels - np.count_nonzero(x)) / num_pixels) >= 0.2 for x in idx]
-        valid_idx = [i for i, x in enumerate(valid_idx) if x]
+        # # idx = [np.asarray(Image.open(x))[:, :, 0] / 255 for x in val_mask_list]
+        # idx = get_valid_idx(val_mask_list)
+        # num_pixels = args.imagesize ** 2
+        # valid_idx = [((num_pixels - np.count_nonzero(x)) / num_pixels) >= 0.2 for x in idx]
+        # valid_idx = [i for i, x in enumerate(valid_idx) if x]
 
-        val_image_list = [val_image_list[i] for i in valid_idx]
-        val_mask_list = [val_mask_list[i] for i in valid_idx]
+        # val_image_list = [val_image_list[i] for i in valid_idx]
+        # val_mask_list = [val_mask_list[i] for i in valid_idx]
 
-        val_split = int(len(image_list) * args.val_split)
-        val_image_list = val_image_list[:val_split]
-        val_mask_list = val_mask_list[:val_split]
+        # val_split = int(len(image_list) * args.val_split)
+        # val_image_list = val_image_list[:val_split]
+        # val_mask_list = val_mask_list[:val_split]
 
 
-        val_image_list, val_mask_list = shuffle(val_image_list, val_mask_list)
-
+        # val_image_list, val_mask_list = shuffle(val_image_list, val_mask_list)
     return image_list, mask_list, val_image_list, val_mask_list, sample_weight_list
 
 
@@ -356,7 +373,7 @@ logger.info('Loading dataset {}'.format(args.data))
 
 class make_dataset(torch.utils.data.Dataset):
     """Make Pytorch dataset."""
-    def __init__(self, image_list, mask_list):
+    def __init__(self, image_list, mask_list,train=True):
         """
         Args:
             image_list 
@@ -364,6 +381,21 @@ class make_dataset(torch.utils.data.Dataset):
         """
         self.image_list = image_list
         self.mask_list  = mask_list
+        self.train = train
+        if train:
+            self.transform  = transforms.Compose([
+                                # transforms.ToPILImage(),
+                                # transforms.RandomHorizontalFlip(),
+                                transforms.ToTensor(),
+                                reduce_bits,
+                                lambda x: add_noise(x, nvals=2**args.nbits),
+                            ])
+        else:
+            self.transform  = transforms.Compose([
+                                transforms.ToTensor(),
+                                reduce_bits,
+                                lambda x: add_noise(x, nvals=2**args.nbits),
+                            ])
         
     def __len__(self):
         return len(self.image_list)
@@ -371,118 +403,26 @@ class make_dataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         image = io.imread(image_list[idx],as_gray=False, pilmode="RGB")
         mask  = io.imread(mask_list[idx],as_gray=True)
-        image = image / 255
+        
+        # im = image.astype('uint8')
+        # im = Image.fromarray(im)
+        # im.save('test1.png')
+        image = imgtf.RGB2HSD(image/255.0).astype('float32')
+        image = self.transform(image)
+        
+        
+        # im = image.permute(1,2,0)
+        # im = im.cpu().detach().numpy()
+        # im = im * 255
+        # im = im.astype('uint8')
+        # im = Image.fromarray(im)
+        # im.save('test2.png')
         mask  = mask 
-        sample = (image.astype('float32'),mask.astype('float32'))
+        sample = (image ,mask)
         return sample
 
 # Dataset and hyperparameters
-if args.data == 'cifar10':
-    im_dim = 3
-    n_classes = 10
-    if args.task in ['classification', 'hybrid']:
-
-        # Classification-specific preprocessing.
-        transform_train = transforms.Compose([
-            transforms.Resize(args.imagesize),
-            transforms.RandomCrop(32, padding=4, padding_mode=args.rcrop_pad_mode),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            add_noise,
-        ])
-
-        transform_test = transforms.Compose([
-            transforms.Resize(args.imagesize),
-            transforms.ToTensor(),
-            add_noise,
-        ])
-
-        # Remove the logit transform.
-        init_layer = layers.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
-    else:
-        transform_train = transforms.Compose([
-            transforms.Resize(args.imagesize),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            add_noise,
-        ])
-        transform_test = transforms.Compose([
-            transforms.Resize(args.imagesize),
-            transforms.ToTensor(),
-            add_noise,
-        ])
-        init_layer = layers.LogitTransform(0.05)
-    train_loader = torch.utils.data.DataLoader(
-        datasets.CIFAR10(args.dataroot, train=True, transform=transform_train),
-        batch_size=args.batchsize,
-        shuffle=True,
-        num_workers=args.nworkers,
-    )
-    test_loader = torch.utils.data.DataLoader(
-        datasets.CIFAR10(args.dataroot, train=False, transform=transform_test),
-        batch_size=args.val_batchsize,
-        shuffle=False,
-        num_workers=args.nworkers,
-    )
-elif args.data == 'mnist':
-    im_dim = 1
-    init_layer = layers.LogitTransform(1e-6)
-    n_classes = 10
-    train_loader = torch.utils.data.DataLoader(
-        datasets.MNIST(
-            args.dataroot, train=True, transform=transforms.Compose([
-                transforms.Resize(args.imagesize),
-                transforms.ToTensor(),
-                add_noise,
-            ])
-        ),
-        batch_size=args.batchsize,
-        shuffle=True,
-        num_workers=args.nworkers,
-    )
-
-    test_loader = torch.utils.data.DataLoader(
-        datasets.MNIST(
-            args.dataroot, train=False, transform=transforms.Compose([
-                transforms.Resize(args.imagesize),
-                transforms.ToTensor(),
-                add_noise,
-            ])
-        ),
-        batch_size=args.val_batchsize,
-        shuffle=False,
-        num_workers=args.nworkers,
-    )
-elif args.data == 'svhn':
-    im_dim = 3
-    init_layer = layers.LogitTransform(0.05)
-    n_classes = 10
-    train_loader = torch.utils.data.DataLoader(
-        vdsets.SVHN(
-            args.dataroot, split='train', download=True, transform=transforms.Compose([
-                transforms.Resize(args.imagesize),
-                transforms.RandomCrop(32, padding=4, padding_mode=args.rcrop_pad_mode),
-                transforms.ToTensor(),
-                add_noise,
-            ])
-        ),
-        batch_size=args.batchsize,
-        shuffle=True,
-        num_workers=args.nworkers,
-    )
-    test_loader = torch.utils.data.DataLoader(
-        vdsets.SVHN(
-            args.dataroot, split='test', download=True, transform=transforms.Compose([
-                transforms.Resize(args.imagesize),
-                transforms.ToTensor(),
-                add_noise,
-            ])
-        ),
-        batch_size=args.val_batchsize,
-        shuffle=False,
-        num_workers=args.nworkers,
-    )
-elif args.data == 'celebahq':
+if args.data == 'celebahq':
     im_dim = 3
     init_layer = layers.LogitTransform(0.05)
     if args.imagesize != 256:
@@ -507,73 +447,18 @@ elif args.data == 'celebahq':
             ])
         ), batch_size=args.val_batchsize, shuffle=False, num_workers=args.nworkers
     )
-elif args.data == 'celeba_5bit':
-    im_dim = 3
-    init_layer = layers.LogitTransform(0.05)
-    if args.imagesize != 64:
-        logger.info('Changing image size to 64.')
-        args.imagesize = 64
-    train_loader = torch.utils.data.DataLoader(
-        datasets.CelebA5bit(
-            train=True, transform=transforms.Compose([
-                transforms.ToPILImage(),
-                transforms.RandomHorizontalFlip(),
-                transforms.ToTensor(),
-                lambda x: add_noise(x, nvals=32),
-            ])
-        ), batch_size=args.batchsize, shuffle=True, num_workers=args.nworkers
-    )
-    test_loader = torch.utils.data.DataLoader(
-        datasets.CelebA5bit(train=False, transform=transforms.Compose([
-            lambda x: add_noise(x, nvals=32),
-        ])), batch_size=args.val_batchsize, shuffle=False, num_workers=args.nworkers
-    )
-elif args.data == 'imagenet32':
-    im_dim = 3
-    init_layer = layers.LogitTransform(0.05)
-    if args.imagesize != 32:
-        logger.info('Changing image size to 32.')
-        args.imagesize = 32
-    train_loader = torch.utils.data.DataLoader(
-        datasets.Imagenet32(train=True, transform=transforms.Compose([
-            add_noise,
-        ])), batch_size=args.batchsize, shuffle=True, num_workers=args.nworkers
-    )
-    test_loader = torch.utils.data.DataLoader(
-        datasets.Imagenet32(train=False, transform=transforms.Compose([
-            add_noise,
-        ])), batch_size=args.val_batchsize, shuffle=False, num_workers=args.nworkers
-    )
-elif args.data == 'imagenet64':
-    im_dim = 3
-    init_layer = layers.LogitTransform(0.05)
-    if args.imagesize != 64:
-        logger.info('Changing image size to 64.')
-        args.imagesize = 64
-    train_loader = torch.utils.data.DataLoader(
-        datasets.Imagenet64(train=True, transform=transforms.Compose([
-            add_noise,
-        ])), batch_size=args.batchsize, shuffle=True, num_workers=args.nworkers
-    )
-    test_loader = torch.utils.data.DataLoader(
-        datasets.Imagenet64(train=False, transform=transforms.Compose([
-            add_noise,
-        ])), batch_size=args.val_batchsize, shuffle=False, num_workers=args.nworkers
-    )
-    
 elif args.data == 'custom':
-    im_dim = 3
-
+    im_dim = args.nclusters
+    n_classes = args.nclusters
     init_layer = layers.LogitTransform(0.05)
     
     image_list, mask_list, val_image_list, val_mask_list, sample_weight_list = get_image_lists(args)
-    
-    train_dataset = make_dataset(image_list, mask_list)
-    test_dataset  = make_dataset(val_image_list, val_mask_list)
+    train_dataset = make_dataset(image_list, mask_list,train=True)
+    test_dataset  = make_dataset(val_image_list, val_mask_list,train=False)
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batchsize, shuffle=True, num_workers=args.nworkers)
-    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=args.val_batchsize, shuffle=False, num_workers=args.nworkers)
+    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=args.batchsize, shuffle=False, num_workers=args.nworkers)
 
-if args.task in ['classification', 'hybrid']:
+if args.task in ['classification', 'hybrid','gmm']:
     try:
         n_classes
     except NameError:
@@ -629,6 +514,10 @@ model = ResidualFlow(
 )
 
 model.to(device)
+
+# Custom
+gmm = gmm(input_size,args,num_clusters=args.nclusters)
+gmm.to(device)
 ema = utils.ExponentialMovingAverage(model)
 
 def parallelize(model):
@@ -637,7 +526,6 @@ def parallelize(model):
 
 logger.info(model)
 logger.info('EMA: {}'.format(ema))
-
 
 # Optimization
 def tensor_in(t, a):
@@ -648,16 +536,18 @@ def tensor_in(t, a):
 
 
 scheduler = None
+params = [par for par in model.parameters()] + [par for par in gmm.parameters()]
 
+# params = [par for par in gmm.parameters()]
 if args.optimizer == 'adam':
-    optimizer = optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.99), weight_decay=args.wd)
+    optimizer = optim.Adam(params, lr=args.lr, betas=(0.9, 0.99), weight_decay=args.wd)
     if args.scheduler: scheduler = CosineAnnealingWarmRestarts(optimizer, 20, T_mult=2, last_epoch=args.begin_epoch - 1)
 elif args.optimizer == 'adamax':
-    optimizer = optim.Adamax(model.parameters(), lr=args.lr, betas=(0.9, 0.99), weight_decay=args.wd)
+    optimizer = optim.Adamax(params, lr=args.lr, betas=(0.9, 0.99), weight_decay=args.wd)
 elif args.optimizer == 'rmsprop':
-    optimizer = optim.RMSprop(model.parameters(), lr=args.lr, weight_decay=args.wd)
+    optimizer = optim.RMSprop(params, lr=args.lr, weight_decay=args.wd)
 elif args.optimizer == 'sgd':
-    optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=args.wd)
+    optimizer = torch.optim.SGD(params, lr=args.lr, momentum=0.9, weight_decay=args.wd)
     if args.scheduler:
         scheduler = torch.optim.lr_scheduler.MultiStepLR(
             optimizer, milestones=[60, 120, 160], gamma=0.2, last_epoch=args.begin_epoch - 1
@@ -692,16 +582,14 @@ logger.info(optimizer)
 fixed_z = standard_normal_sample([min(32, args.batchsize),
                                   (im_dim + args.padding) * args.imagesize * args.imagesize]).to(device)
 
-criterion = torch.nn.CrossEntropyLoss()
 
 
-def compute_loss(x, model, beta=1.0):
+def compute_loss(x, model,gmm, beta=1.0):
     bits_per_dim, logits_tensor = torch.zeros(1).to(x), torch.zeros(n_classes).to(x)
     logpz, delta_logp = torch.zeros(1).to(x), torch.zeros(1).to(x)
 
-    if args.data == 'celeba_5bit':
-        nvals = 32
-    elif args.data == 'celebahq':
+
+    if args.data == 'celebahq' or 'custom':
         nvals = 2**args.nbits
     else:
         nvals = 256
@@ -711,31 +599,28 @@ def compute_loss(x, model, beta=1.0):
     if args.squeeze_first:
         x = squeeze_layer(x)
 
-    if args.task == 'hybrid':
-        z_logp, logits_tensor = model(x.view(-1, *input_size[1:]), 0, classify=True)
+    
+    if args.task == 'gmm' :
+        D = x[:,0,...].unsqueeze(0)
+        D = rescale(D) # rescaling to [0,1]
+        D = D.repeat(1, args.nclusters, 1, 1)
+        z_logp = model(D.view(-1, *input_size[1:]), 0, classify=False)
+        
+
         z, delta_logp = z_logp
         
-    elif args.task == 'density':
-        # z, delta_logp = model(x.view(-1, *input_size[1:]), 0)
-        z, delta_logp = model(x.reshape((x.shape[0],)+input_size[1:]), 0)
-        
-    elif args.task == 'classification':
-        z, logits_tensor = model(x.view(-1, *input_size[1:]), classify=True)
-
-    if args.task in ['density', 'hybrid']:
         # log p(z)
-        logpz = standard_normal_logprob(z).view(z.size(0), -1).sum(1, keepdim=True)
+        # logpz = standard_normal_logprob(z).view(z.size(0), -1).sum(1, keepdim=True)
+        logpz, params = gmm(z.view(-1,args.nclusters,args.imagesize,args.imagesize), x.permute(0,2,3,1))
 
         # log p(x)
-        logpx = logpz - beta * delta_logp - np.log(nvals) * (
-            args.imagesize * args.imagesize * (im_dim + args.padding)
-        ) - logpu
+        logpx = logpz - beta * delta_logp - np.log(nvals) * (args.imagesize * args.imagesize * (im_dim + args.padding)) - logpu
         bits_per_dim = -torch.mean(logpx) / (args.imagesize * args.imagesize * im_dim) / np.log(2)
 
         logpz = torch.mean(logpz).detach()
         delta_logp = torch.mean(-delta_logp).detach()
-    
-    return bits_per_dim, logits_tensor, logpz, delta_logp
+
+    return bits_per_dim, logits_tensor, logpz, delta_logp, params
 
 
 def estimator_moments(model, baseline=0):
@@ -764,6 +649,7 @@ def compute_p_grads(model):
 
 batch_time = utils.RunningAverageMeter(0.97)
 bpd_meter = utils.RunningAverageMeter(0.97)
+ll_meter = utils.RunningAverageMeter(0.97)
 logpz_meter = utils.RunningAverageMeter(0.97)
 deltalogp_meter = utils.RunningAverageMeter(0.97)
 firmom_meter = utils.RunningAverageMeter(0.97)
@@ -772,58 +658,45 @@ gnorm_meter = utils.RunningAverageMeter(0.97)
 ce_meter = utils.RunningAverageMeter(0.97)
 
 
-
-def train(epoch, model):
+def train(epoch, model,gmm):
     model = parallelize(model)
+    gmm   = parallelize(gmm)
     model.train()
+    gmm.train()
 
-    total = 0
-    correct = 0
-    pdb.set_trace()
     end = time.time()
     for i, (x, y) in enumerate(train_loader):
+        
+        # x = x[0,...].unsqueeze(0)
+        # y = y[0,...].unsqueeze(0)
+        x = x.to(device)
+        # for i in range(args.gmmsteps):
         global_itr = epoch * len(train_loader) + i
         update_lr(optimizer, global_itr)
-
+        print(f'Step {global_itr}')
         # Training procedure:
         # for each sample x:
         #   compute z = f(x)
         #   maximize log p(x) = log p(z) - log |det df/dx|
 
-        x = x.to(device)
-
         beta = beta = min(1, global_itr / args.annealing_iters) if args.annealing_iters > 0 else 1.
 
-        bpd, logits, logpz, neg_delta_logp = compute_loss(x, model, beta=beta)
+        bpd, logits, logpz, neg_delta_logp, params = compute_loss(x, model,gmm, beta=beta)
 
-        if args.task in ['density', 'hybrid']:
-            firmom, secmom = estimator_moments(model)
+        firmom, secmom = estimator_moments(model)
 
-            bpd_meter.update(bpd.item())
-            logpz_meter.update(logpz.item())
-            deltalogp_meter.update(neg_delta_logp.item())
-            firmom_meter.update(firmom)
-            secmom_meter.update(secmom)
+        bpd_meter.update(bpd.item())
+        logpz_meter.update(logpz.item())
+        deltalogp_meter.update(neg_delta_logp.item())
+        firmom_meter.update(firmom)
+        secmom_meter.update(secmom)
 
-        if args.task in ['classification', 'hybrid']:
-            y = y.to(device)
-            crossent = criterion(logits, y)
-            ce_meter.update(crossent.item())
 
-            # Compute accuracy.
-            _, predicted = logits.max(1)
-            total += y.size(0)
-            correct += predicted.eq(y).sum().item()
 
         # compute gradient and do SGD step
-        if args.task == 'density':
-            loss = bpd
-        elif args.task == 'classification':
-            loss = crossent
-        else:
-            if not args.scale_dim: bpd = bpd * (args.imagesize * args.imagesize * im_dim)
-            loss = bpd + crossent / np.log(2)  # Change cross entropy from nats to bits.
+        loss = bpd
         loss.backward()
+
 
         if global_itr % args.update_freq == args.update_freq - 1:
 
@@ -835,8 +708,12 @@ def train(epoch, model):
 
             grad_norm = torch.nn.utils.clip_grad.clip_grad_norm_(model.parameters(), 1.)
             if args.learn_p: compute_p_grads(model)
+            
+
             optimizer.step()
+            print("Optimizer.step() done")
             optimizer.zero_grad()
+            
             update_lipschitz(model)
             ema.apply()
 
@@ -845,7 +722,7 @@ def train(epoch, model):
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
-
+        
         if i % args.print_freq == 0:
             s = (
                 'Epoch: [{0}][{1}/{2}] | Time {batch_time.val:.3f} | '
@@ -854,34 +731,35 @@ def train(epoch, model):
                 )
             )
 
-            if args.task in ['density', 'hybrid']:
+            if args.task in ['density', 'hybrid','gmm']:
                 s += (
-                    ' | Bits/dim {bpd_meter.val:.4f}({bpd_meter.avg:.4f}) | '
-                    'Logpz {logpz_meter.avg:.0f} | '
-                    '-DeltaLogp {deltalogp_meter.avg:.0f} | '
-                    'EstMoment ({firmom_meter.avg:.0f},{secmom_meter.avg:.0f})'.format(
-                        bpd_meter=bpd_meter, logpz_meter=logpz_meter, deltalogp_meter=deltalogp_meter,
-                        firmom_meter=firmom_meter, secmom_meter=secmom_meter
+                    f' | Bits/dim {bpd_meter.val}({bpd_meter.avg}) | '
+                    # f' | params {[p.clone() for p in gmm.parameters().grad]}) | '
+                    f'Logpz {logpz_meter.avg} | '
+                    f'-DeltaLogp {deltalogp_meter.avg} | '
+                    f'EstMoment ({firmom_meter.avg},{secmom_meter.avg})'
                     )
-                )
-
-            if args.task in ['classification', 'hybrid']:
-                s += ' | CE {ce_meter.avg:.4f} | Acc {0:.4f}'.format(100 * correct / total, ce_meter=ce_meter)
+            
 
             logger.info(s)
         if i % args.vis_freq == 0 and i > 0:
-            visualize(epoch, model, i, x)
-
+            visualize(epoch, model,gmm, i, x, global_itr)
+    
         del x
         torch.cuda.empty_cache()
         gc.collect()
+        if i == len(train_loader) - 2: break
+    return
 
 
 def validate(epoch, model, ema=None):
     """
-    Evaluates the cross entropy between p_data and p_model.
+    - Deploys the color normalization on test image dataset
+    - Evaluates NMI / CV / SD
+    # Evaluates the cross entropy between p_data and p_model.
     """
     print("Starting Validation")
+    
     bpd_meter = utils.AverageMeter()
     ce_meter = utils.AverageMeter()
 
@@ -893,70 +771,340 @@ def validate(epoch, model, ema=None):
     model = parallelize(model)
     model.eval()
 
-    correct = 0
-    total = 0
+    mu_tmpl = 0
+    std_tmpl = 0
+    N = 0
+    
 
-    start = time.time()
-    with torch.no_grad():
-        for i, (x, y) in enumerate(tqdm(test_loader)):
-            x = x.to(device)
+    print("Deploying on templates...")
+    for x, y in train_loader:
 
-            bpd, logits, _, _ = compute_loss(x, model)
-            bpd_meter.update(bpd.item(), x.size(0))
+        x = x.to(device)
+        ### TEMPLATES ###
+        D = x[:,0,...].unsqueeze(1)
+        D = rescale(D) # Scale to [0,1] interval
+        D = D.repeat(1, args.nclusters, 1, 1)
+        with torch.no_grad():
+            if isinstance(model,torch.nn.DataParallel):
+                z_logp = model.module(D.view(-1, *input_size[1:]), 0, classify=False)
+            else:
+                z_logp = model(D.view(-1, *input_size[1:]), 0, classify=False)
+            
+            z, delta_logp = z_logp
+            if isinstance(gmm,torch.nn.DataParallel):
+                logpz, params = gmm.module(z.view(-1,args.nclusters,args.imagesize,args.imagesize), x.permute(0,2,3,1))
+            else:
+                logpz, params = gmm(z.view(-1,args.nclusters,args.imagesize,args.imagesize), x.permute(0,2,3,1))
 
-            if args.task in ['classification', 'hybrid']:
-                y = y.to(device)
-                loss = criterion(logits, y)
-                ce_meter.update(loss.item(), x.size(0))
-                _, predicted = logits.max(1)
-                total += y.size(0)
-                correct += predicted.eq(y).sum().item()
-    val_time = time.time() - start
+        mu, std, gamma =  params
+        mu  = mu.cpu().numpy()
+        std = std.cpu().numpy()
+        gamma    = gamma.cpu().numpy() 
+    
+        mu  = mu[...,np.newaxis]
+        std = std[...,np.newaxis]
+        
+        mu = np.swapaxes(mu,0,1) # (3,4,1) -> (4,3,1)
+        mu = np.swapaxes(mu,1,2) # (4,3,1) -> (4,1,3)
+        std = np.swapaxes(std,0,1) # (3,4,1) -> (4,3,1)
+        std = np.swapaxes(std,1,2) # (4,3,1) -> (4,1,3)
+        
+          
+        N = N+1
+        mu_tmpl  = (N-1)/N * mu_tmpl + 1/N* mu
+        std_tmpl  = (N-1)/N * std_tmpl + 1/N* std
+        
+        break
+      
+    print("Estimated Mu for template(s):")
+    print(mu_tmpl)
+      
+    print("Estimated Sigma for template(s):")
+    print(std_tmpl)
+    
+          
+    metrics = dict()
+    for tc in range(1,args.nclusters+1):
+        metrics[f'mean_{tc}'] = []
+        metrics[f'median_{tc}']=[]
+        metrics[f'perc_95_{tc}']=[]
+        metrics[f'nmi_{tc}']=[]
+        metrics[f'sd_{tc}']=[]
+        metrics[f'cv_{tc}']=[]
+    pdb.set_trace()
+    print("Predicting on templates...")
+    for x_test, y_test in test_loader:
 
-    if ema is not None:
-        ema.swap()
-    s = 'Epoch: [{0}]\tTime {1:.2f} | Test bits/dim {bpd_meter.avg:.4f}'.format(epoch, val_time, bpd_meter=bpd_meter)
-    if args.task in ['classification', 'hybrid']:
-        s += ' | CE {:.4f} | Acc {:.2f}'.format(ce_meter.avg, 100 * correct / total)
-    logger.info(s)
-    return bpd_meter.avg
+        ### DEPLOY ###
+        D = x_test[0,0,...].unsqueeze(0).unsqueeze(1)
+        D = rescale(D) # Scale to [0,1] interval
+        D = D.repeat(1, args.nclusters, 1, 1)
+        with torch.no_grad():
+            if isinstance(model,torch.nn.DataParallel):
+                z_logp = model.module(D.view(-1, *input_size[1:]), 0, classify=False)
+            else:
+                z_logp = model(D.view(-1, *input_size[1:]), 0, classify=False)
+            
+        
+            z, delta_logp = z_logp
+            if isinstance(gmm,torch.nn.DataParallel):
+                logpz, params = gmm.module(z.view(-1,args.nclusters,args.imagesize,args.imagesize), x_test.permute(0,2,3,1))
+            else:
+                logpz, params = gmm(z.view(-1,args.nclusters,args.imagesize,args.imagesize), x_test.permute(0,2,3,1))
+
+    
+        mu, std, pi =  params
+        mu  = mu.cpu().numpy()
+        std = std.cpu().numpy()
+        pi  = pi.cpu().numpy()
+        
+        mu  = mu[...,np.newaxis]
+        std = std[...,np.newaxis]
+        
+        mu = np.swapaxes(mu,0,1) # (3,4,1) -> (4,3,1)
+        mu = np.swapaxes(mu,1,2) # (4,3,1) -> (4,1,3)
+        std = np.swapaxes(std,0,1) # (3,4,1) -> (4,3,1)
+        std = np.swapaxes(std,1,2) # (4,3,1) -> (4,1,3)
+        
+    
+        X_hsd = np.swapaxes(x_test.cpu().numpy(),1,2)
+        X_hsd = np.swapaxes(X_hsd,2,3)
+
+        X_conv = imgtf.image_dist_transform(X_hsd, mu, std, pi, mu_tmpl, std_tmpl, args.imagesize, args.nclusters)
+        
+        ClsLbl = np.argmax(np.asarray(pi),axis=-1)
+        ClsLbl = ClsLbl.astype('int32')
+        mean_rgb = np.mean(X_conv,axis=-1)
+        for tc in range(1,args.nclusters+1):
+            msk = ClsLbl==tc
+            if not msk.any(): continue # skip metric if no class labels are found
+            ma = mean_rgb[msk]
+            mean = np.mean(ma)
+            median = np.median(ma)
+            perc = np.percentile(ma, 95)
+            nmi = median / perc
+            metrics[f'mean_{tc}'].append(mean)
+            metrics[f'median_{tc}'].append(median)
+            metrics[f'perc_95_{tc}'].append(perc)
+            metrics[f'nmi_{tc}'].append(nmi)
+  
+    av_sd = []
+    av_cv = []
+    for tc in range(1,args.nclusters+1):
+        if len(metrics[f'mean_{tc}']) == 0: continue
+        metrics[f'sd_{tc}'] = np.array(metrics[f'nmi_{tc}']).std()
+        metrics[f'cv_{tc}'] = np.array(metrics[f'nmi_{tc}']).std() / np.array(metrics[f'nmi_{tc}']).mean()
+        print(f'sd_{tc}:', metrics[f'sd_{tc}'])
+        print(f'cv_{tc}:', metrics[f'cv_{tc}'])
+        av_sd.append(metrics[f'sd_{tc}'])
+        av_cv.append(metrics[f'cv_{tc}'])
+    
+    print(f"Average sd = {np.array(av_sd).mean()}")
+    print(f"Average cv = {np.array(av_cv).mean()}")
+    import csv
+    file = open(f"metrics-{args.train_centers}-{args.val_centers}.csv","w")
+    writer = csv.writer(file)
+    for key, value in metrics.items():
+        writer.writerow([key, value])
+    
+    
+    file.close()
+      
+    # correct = 0
+    # total = 0
+
+    # start = time.time()
+    # with torch.no_grad():
+    #     for i, (x, y) in enumerate(tqdm(test_loader)):
+    #         x = x.to(device)
+
+    #         bpd, logits, _, _ = compute_loss(x, model)
+    #         bpd_meter.update(bpd.item(), x.size(0))
+
+    # val_time = time.time() - start
+
+    # if ema is not None:
+    #     ema.swap()
+    # s = 'Epoch: [{0}]\tTime {1:.2f} | Test bits/dim {bpd_meter.avg:.4f}'.format(epoch, val_time, bpd_meter=bpd_meter)
+    # if args.task in ['classification', 'hybrid']:
+    #     s += ' | CE {:.4f} | Acc {:.2f}'.format(ce_meter.avg, 100 * correct / total)
+    # logger.info(s)
+    # return bpd_meter.avg
+    
+    return
 
 
-def visualize(epoch, model, itr, real_imgs):
+def visualize(epoch, model, gmm, itr, real_imgs, global_itr):
     print("Starting Visualisation")
     model.eval()
+    gmm.eval()
     utils.makedirs(os.path.join(args.save, 'imgs'))
-    real_imgs = real_imgs[:32]
-    _real_imgs = real_imgs
+    # real_imgs = real_imgs[:32]
+    # _real_imgs = real_imgs
+    # if args.data == 'celeba_5bit':
+    #     nvals = 32
+    # elif args.data == 'celebahq' or args.data =='custom':
+    #     nvals = 2**args.nbits
+    # else:
+    #     nvals = 256
     
-    if args.data == 'celeba_5bit':
-        nvals = 32
-    elif args.data == 'celebahq':
-        nvals = 2**args.nbits
-    else:
-        nvals = 256
+    # with torch.no_grad():
+    #     # reconstructed real images
+    #     real_imgs, _ = add_padding(real_imgs, nvals)
+    #     if args.squeeze_first: real_imgs = squeeze_layer(real_imgs)
+    #     recon_imgs = model(model(real_imgs.view(-1, *input_size[1:])), inverse=True).view(-1, *input_size[1:])
+    #     if args.squeeze_first: recon_imgs = squeeze_layer.inverse(recon_imgs)
+    #     recon_imgs = remove_padding(recon_imgs)
 
-    with torch.no_grad():
-        # reconstructed real images
-        real_imgs, _ = add_padding(real_imgs, nvals)
-        if args.squeeze_first: real_imgs = squeeze_layer(real_imgs)
-        recon_imgs = model(model(real_imgs.view(-1, *input_size[1:])), inverse=True).view(-1, *input_size[1:])
-        if args.squeeze_first: recon_imgs = squeeze_layer.inverse(recon_imgs)
-        recon_imgs = remove_padding(recon_imgs)
+    #     # random samples
+    #     fake_imgs = model(fixed_z, inverse=True).view(-1, *input_size[1:])
+    #     if args.squeeze_first: fake_imgs = squeeze_layer.inverse(fake_imgs)
+    #     fake_imgs = remove_padding(fake_imgs)
 
-        # random samples
-        fake_imgs = model(fixed_z, inverse=True).view(-1, *input_size[1:])
-        if args.squeeze_first: fake_imgs = squeeze_layer.inverse(fake_imgs)
-        fake_imgs = remove_padding(fake_imgs)
+    #     fake_imgs = fake_imgs.view(-1, im_dim, args.imagesize, args.imagesize)
+    #     recon_imgs = recon_imgs.view(-1, im_dim, args.imagesize, args.imagesize)
+    #     _real_imgs = torch.reshape(_real_imgs,fake_imgs.shape)
+    #     imgs = torch.cat([_real_imgs, fake_imgs, recon_imgs], 0)
 
-        fake_imgs = fake_imgs.view(-1, im_dim, args.imagesize, args.imagesize)
-        recon_imgs = recon_imgs.view(-1, im_dim, args.imagesize, args.imagesize)
-        _real_imgs = torch.reshape(_real_imgs,fake_imgs.shape)
-        imgs = torch.cat([_real_imgs, fake_imgs, recon_imgs], 0)
+    #     filename = os.path.join(args.save, 'imgs', 'e{:03d}_i{:06d}.png'.format(epoch, itr))
+    #     save_image(imgs.cpu().float(), filename, nrow=16, padding=2)
+        # save_image(imgs.cpu().int(), 'int'+filename, nrow=16, padding=2)
+        
+    for x_test, y_test in test_loader:
+        x_test = x_test[0,...].unsqueeze(0)
+        y_test = y_test[0,...].unsqueeze(0)
+        x_test = x_test.to(device)
+        ### TEMPLATES ###
+        D = real_imgs[0,0,...].unsqueeze(0).unsqueeze(1)
+        D = rescale(D) # Scale to [0,1] interval
+        D = D.repeat(1, args.nclusters, 1, 1)
+        x = real_imgs[0,...].unsqueeze(0)
+        with torch.no_grad():
+            if isinstance(model,torch.nn.DataParallel):
+                z_logp = model.module(D.view(-1, *input_size[1:]), 0, classify=False)
+            else:
+                z_logp = model(D.view(-1, *input_size[1:]), 0, classify=False)
+            
+            z, delta_logp = z_logp
+            if isinstance(gmm,torch.nn.DataParallel):
+                logpz, params = gmm.module(z.view(-1,args.nclusters,args.imagesize,args.imagesize), x.permute(0,2,3,1))
+            else:
+                logpz, params = gmm(z.view(-1,args.nclusters,args.imagesize,args.imagesize), x.permute(0,2,3,1))
 
-        filename = os.path.join(args.save, 'imgs', 'e{:03d}_i{:06d}.png'.format(epoch, itr))
-        save_image(imgs.cpu().float(), filename, nrow=16, padding=2)
-    model.train()
+        mu_tmpl, std_tmpl, gamma =  params
+        mu_tmpl  = mu_tmpl.cpu().numpy()
+        std_tmpl = std_tmpl.cpu().numpy()
+        gamma    = gamma.cpu().numpy() 
+    
+        mu_tmpl  = mu_tmpl[...,np.newaxis]
+        std_tmpl = std_tmpl[...,np.newaxis]
+        
+        mu_tmpl = np.swapaxes(mu_tmpl,0,1) # (3,4,1) -> (4,3,1)
+        mu_tmpl = np.swapaxes(mu_tmpl,1,2) # (4,3,1) -> (4,1,3)
+        std_tmpl = np.swapaxes(std_tmpl,0,1) # (3,4,1) -> (4,3,1)
+        std_tmpl = np.swapaxes(std_tmpl,1,2) # (4,3,1) -> (4,1,3)
+        
+        
+        ### DEPLOY ###
+        D = x_test[0,0,...].unsqueeze(0).unsqueeze(1)
+        D = rescale(D) # Scale to [0,1] interval
+        D = D.repeat(1, args.nclusters, 1, 1)
+        with torch.no_grad():
+            if isinstance(model,torch.nn.DataParallel):
+                z_logp = model.module(D.view(-1, *input_size[1:]), 0, classify=False)
+            else:
+                z_logp = model(D.view(-1, *input_size[1:]), 0, classify=False)
+            
+        
+            z, delta_logp = z_logp
+            if isinstance(gmm,torch.nn.DataParallel):
+                logpz, params = gmm.module(z.view(-1,args.nclusters,args.imagesize,args.imagesize), x_test.permute(0,2,3,1))
+            else:
+                logpz, params = gmm(z.view(-1,args.nclusters,args.imagesize,args.imagesize), x_test.permute(0,2,3,1))
+
+    
+        mu, std, pi =  params
+        mu  = mu.cpu().numpy()
+        std = std.cpu().numpy()
+        pi  = pi.cpu().numpy()
+        
+        mu  = mu[...,np.newaxis]
+        std = std[...,np.newaxis]
+        
+        mu = np.swapaxes(mu,0,1) # (3,4,1) -> (4,3,1)
+        mu = np.swapaxes(mu,1,2) # (4,3,1) -> (4,1,3)
+        std = np.swapaxes(std,0,1) # (3,4,1) -> (4,3,1)
+        std = np.swapaxes(std,1,2) # (4,3,1) -> (4,1,3)
+        
+    
+        X_hsd = np.swapaxes(x_test.cpu().numpy(),1,2)
+        X_hsd = np.swapaxes(X_hsd,2,3)
+
+        X_conv = imgtf.image_dist_transform(X_hsd, mu, std, pi, mu_tmpl, std_tmpl, args.imagesize, args.nclusters)
+        
+        im_tmpl = real_imgs.cpu().numpy()
+        im_tmpl = np.swapaxes(im_tmpl,1,2)
+        im_tmpl = np.swapaxes(im_tmpl,2,3)
+        im_tmpl = imgtf.HSD2RGB_Numpy(im_tmpl[0])
+        im_tmpl = (im_tmpl*255).astype('uint8')
+        im_tmpl = Image.fromarray(im_tmpl)
+        im_tmpl.save(os.path.join(args.save,'imgs',f'im_tmpl_{global_itr}.png'))
+        
+        im_test = x_test.cpu().numpy()
+        im_test = np.swapaxes(im_test,1,2)
+        im_test = np.swapaxes(im_test,2,3)
+        im_test = imgtf.HSD2RGB_Numpy(im_test[0])
+        im_test = (im_test*255).astype('uint8')
+        im_test = Image.fromarray(im_test)
+        im_test.save(os.path.join(args.save,'imgs',f'im_test_{global_itr}.png'))
+        
+        im_D = D[0,0,...].cpu().numpy()
+        im_D = (im_D*255).astype('uint8')
+        im_D = Image.fromarray(im_D,'L')
+        im_D.save(os.path.join(args.save,'imgs',f'im_D_{global_itr}.png'))
+        
+        im_conv = (X_conv*255).astype('uint8')
+        im_conv = Image.fromarray(im_conv)
+        im_conv.save(os.path.join(args.save,'imgs',f'im_conv_{global_itr}.png'))
+        
+        # gamma
+        ClsLbl = np.argmax(gamma, axis=-1)
+        ClsLbl = ClsLbl.astype('float32')
+        
+        ColorTable = [[255,0,0],[0,255,0],[0,0,255],[255,255,0], [0,255,255], [255,0,255]]
+        colors = np.array(ColorTable, dtype='float32')
+        Msk = np.tile(np.expand_dims(ClsLbl, axis=-1),(1,1,1,3))
+        for k in range(0, args.nclusters):
+            #                                       1 x 256 x 256 x 1                           1 x 3 
+            ClrTmpl = np.einsum('anmd,df->anmf', np.expand_dims(np.ones_like(ClsLbl), axis=3), np.reshape(colors[k,...],[1,3]))
+            # ClrTmpl = 1 x 256 x 256 x 3
+            Msk = np.where(np.equal(Msk,k), ClrTmpl, Msk)
+        
+        im_gamma = Msk[0].astype('uint8')
+        im_gamma = Image.fromarray(im_gamma)
+        im_gamma.save(os.path.join(args.save,'imgs',f'im_gamma_{global_itr}.png'))
+        
+        # pi
+        ClsLbl = np.argmax(pi, axis=-1)
+        ClsLbl = ClsLbl.astype('float32')
+        
+        ColorTable = [[255,0,0],[0,255,0],[0,0,255],[255,255,0], [0,255,255], [255,0,255]]
+        colors = np.array(ColorTable, dtype='float32')
+        Msk = np.tile(np.expand_dims(ClsLbl, axis=-1),(1,1,1,3))
+        for k in range(0, args.nclusters):
+            #                                       1 x 256 x 256 x 1                           1 x 3 
+            ClrTmpl = np.einsum('anmd,df->anmf', np.expand_dims(np.ones_like(ClsLbl), axis=3), np.reshape(colors[k,...],[1,3]))
+            # ClrTmpl = 1 x 256 x 256 x 3
+            Msk = np.where(np.equal(Msk,k), ClrTmpl, Msk)
+        
+        im_gamma = Msk[0].astype('uint8')
+        im_gamma = Image.fromarray(im_gamma)
+        im_gamma.save(os.path.join(args.save,'imgs',f'im_pi_{global_itr}.png'))
+        
+        model.train()
+        gmm.train()
+        
+        return
 
 
 def get_lipschitz_constants(model):
@@ -1005,43 +1153,46 @@ def main():
     lipschitz_constants = []
     ords = []
 
-    # if args.resume:
-    #     validate(args.begin_epoch - 1, model, ema)
+    if args.resume:
+        validate(args.begin_epoch - 1, model, ema)
+        sys.exit(0)
+        
     for epoch in range(args.begin_epoch, args.nepochs):
 
         logger.info('Current LR {}'.format(optimizer.param_groups[0]['lr']))
 
-        train(epoch, model)
+        train(epoch, model, gmm)
         lipschitz_constants.append(get_lipschitz_constants(model))
         ords.append(get_ords(model))
         logger.info('Lipsh: {}'.format(pretty_repr(lipschitz_constants[-1])))
         logger.info('Order: {}'.format(pretty_repr(ords[-1])))
 
-        if args.ema_val:
-            test_bpd = validate(epoch, model, ema)
-        else:
-            test_bpd = validate(epoch, model)
+        # if args.ema_val:
+        #     test_bpd = validate(epoch, model, ema)
+        # else:
+        #     test_bpd = validate(epoch, model)
 
         if args.scheduler and scheduler is not None:
             scheduler.step()
 
-        if test_bpd < best_test_bpd:
-            best_test_bpd = test_bpd
-            utils.save_checkpoint({
-                'state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'args': args,
-                'ema': ema,
-                'test_bpd': test_bpd,
-            }, os.path.join(args.save, 'models'), epoch, last_checkpoints, num_checkpoints=5)
+        # if test_bpd < best_test_bpd:
+        #     best_test_bpd = test_bpd
+        utils.save_checkpoint({
+            'state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'args': args,
+            'ema': ema,
+            # 'test_bpd': test_bpd,
+        }, os.path.join(args.save, 'models'), epoch, last_checkpoints, num_checkpoints=5)
 
         torch.save({
             'state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'args': args,
             'ema': ema,
-            'test_bpd': test_bpd,
+            # 'test_bpd': test_bpd,
         }, os.path.join(args.save, 'models', 'most_recent.pth'))
+        
 
 
 if __name__ == '__main__':

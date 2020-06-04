@@ -92,7 +92,6 @@ class ResidualFlow(nn.Module):
             raise ValueError('Could not compute number of scales for input of' 'size (%d,%d,%d,%d)' % input_size)
 
         self.transforms = self._build_net(input_size)
-
         self.dims = [o[1:] for o in self.calc_output_size(input_size)]
 
         if self.classification:
@@ -102,6 +101,7 @@ class ResidualFlow(nn.Module):
         _, c, h, w = input_size
         transforms = []
         _stacked_blocks = StackediResBlocks if self.block_type == 'resblock' else StackedCouplingBlocks
+        
         for i in range(self.n_scale):
             transforms.append(
                 _stacked_blocks(
@@ -181,11 +181,17 @@ class ResidualFlow(nn.Module):
                     nn.Conv2d(hshape[1], self.classification_hdim, 3, 1, 1),
                     layers.ActNorm2d(self.classification_hdim),
                     nn.ReLU(inplace=True),
-                    nn.AdaptiveAvgPool2d((1, 1)),
+                    nn.AdaptiveAvgPool2d((256, 1)),
                 )
             )
         self.classification_heads = nn.ModuleList(classification_heads)
         self.logit_layer = nn.Linear(self.classification_hdim * len(classification_heads), self.n_classes)
+        self.logit_layer_gmm = nn.Sequential(
+                                    nn.AdaptiveAvgPool2d((self.classification_hdim, 1)),
+                                    nn.Linear(1,self.n_classes),
+                                    nn.Softmax(dim=-1))
+        
+        
 
     def forward(self, x, logpx=None, inverse=False, classify=False):
         if inverse:
@@ -195,14 +201,16 @@ class ResidualFlow(nn.Module):
         for idx in range(len(self.transforms)):
             if logpx is not None:
                 x, logpx = self.transforms[idx].forward(x, logpx)
+
             else:
                 x = self.transforms[idx].forward(x)
+
             if self.factor_out and (idx < len(self.transforms) - 1):
                 d = x.size(1) // 2
                 x, f = x[:, :d], x[:, d:]
                 out.append(f)
 
-            # Handle classification.
+            # Handle classification
             if classify:
                 if self.factor_out:
                     class_outs.append(self.classification_heads[idx](f))
@@ -212,9 +220,11 @@ class ResidualFlow(nn.Module):
         out.append(x)
         out = torch.cat([o.view(o.size()[0], -1) for o in out], 1)
         output = out if logpx is None else (out, logpx)
+
         if classify:
-            h = torch.cat(class_outs, dim=1).squeeze(-1).squeeze(-1)
-            logits = self.logit_layer(h)
+            h = torch.cat(class_outs, dim=-1).squeeze(-1).squeeze(-1)
+            # logits = self.logit_layer(h)
+            logits = self.logit_layer_gmm(h)
             return output, logits
         else:
             return output
