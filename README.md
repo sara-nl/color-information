@@ -1,26 +1,29 @@
-# Residual Flows for Invertible Generative Modeling [[arxiv](https://arxiv.org/abs/1906.02735)]
+# Residual Flows for Invertible Generative Modeling 
 
-<p align="center">
-<img align="middle" src="./assets/flow_comparison.jpg" width="666" />
-</p>
-
-Building on the use of [Invertible Residual Networks](https://arxiv.org/abs/1811.00995) in generative modeling, we propose:
-+ Unbiased estimation of the log-density of samples.
-+ Memory-efficient reformulation of the gradients.
-+ LipSwish activation function.
-
-As a result, Residual Flows scale to much larger networks and datasets.
-
-<p align="center">
-<img align="middle" src="./assets/celebahq_resflow.jpg" width="512" />
-</p>
+- Flow-based generative models parameterize probability distributions through an
+invertible transformation and can be trained by maximum likelihood. Invertible
+residual networks provide a flexible family of transformations where only Lipschitz
+conditions rather than strict architectural constraints are needed for enforcing
+invertibility.
+- This application concerns the invertible mapping of the color information in histopathology Whole Slide Image patches
 
 ## Requirements
 
- - PyTorch 1.0+
- - Python 3.6+
+```
+module use ~/environment-modules-lisa
+module load 2020
+module load TensorFlow/2.1.0-foss-2019b-Python-3.7.4-CUDA-10.1.243
+pip install requirements.txt
+```
+
 
 ## Preprocessing
+
+CAMELYON17 256 x 256:
+```
+See Examode preprocessing
+```
+
 ImageNet:
 1. Follow instructions in `preprocessing/create_imagenet_benchmark_datasets`.
 2. Convert .npy files to .pth using `preprocessing/convert_to_pth`.
@@ -40,7 +43,34 @@ tar -C data/celebahq -xvf celeb-tfr.tar
 python extract_celeba_from_tfrecords
 ```
 
+
+
 ## Density Estimation Experiments
+
+CAMELYON17 256 x 256
+
+```
+python train_img.py \
+ --data custom \
+ --dataset 17 \
+ --train_centers 1 \
+ --val_centers 1 \
+ --train_path /nfs/managed_datasets/CAMELYON17/training/center_XX \
+ --valid_path /nfs/managed_datasets/CAMELYON17/training/center_XX \
+ --val_split 0.2 \
+ --imagesize 256 \
+ --batchsize 8 \
+ --val-batchsize 8 \
+ --actnorm True \
+ --act elu \
+ --wd 0 \
+ --update-freq 5 \
+ --n-exact-terms 8 \
+ --fc-end False \
+ --squeeze-first True \
+ --save experiments/examode256 \
+ --nblocks 16-16-16
+ ```
 
 MNIST:
 ```
@@ -75,7 +105,7 @@ Use the argument `--resume [checkpt.pth]` to evaluate or sample from the model.
 
 Each checkpoint contains two sets of parameters, one from training and one containing the exponential moving average (EMA) accumulated over the course of training. Scripts will automatically use the EMA parameters for evaluation and sampling.
 
-## BibTeX
+## Based on paper
 ```
 @inproceedings{chen2019residualflows,
   title={Residual Flows for Invertible Generative Modeling},
