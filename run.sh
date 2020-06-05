@@ -83,7 +83,7 @@ module list
  --valid_path /nfs/managed_datasets/CAMELYON17/training/center_XX \
  --val_split 0.2 \
  --imagesize 256 \
- --batchsize 4 \
+ --batchsize 8 \
  --val-batchsize 8 \
  --actnorm True \
  --nbits 8 \
