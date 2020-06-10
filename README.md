@@ -1,109 +1,4 @@
-# Residual Flows for Invertible Generative Modeling 
-
-- Flow-based generative models parameterize probability distributions through an
-invertible transformation and can be trained by maximum likelihood. Invertible
-residual networks provide a flexible family of transformations where only Lipschitz
-conditions rather than strict architectural constraints are needed for enforcing
-invertibility.
-- This application concerns the invertible mapping of the color information in histopathology Whole Slide Image patches
-
-## Requirements
-
-```
-module use ~/environment-modules-lisa
-module load 2020
-module load TensorFlow/2.1.0-foss-2019b-Python-3.7.4-CUDA-10.1.243
-pip install requirements.txt
-```
-
-
-## Preprocessing
-
-CAMELYON17 256 x 256:
-```
-See Examode preprocessing
-```
-
-ImageNet:
-1. Follow instructions in `preprocessing/create_imagenet_benchmark_datasets`.
-2. Convert .npy files to .pth using `preprocessing/convert_to_pth`.
-3. Place in `data/imagenet32` and `data/imagenet64`.
-
-CelebAHQ 64x64 5bit:
-
-1. Download from https://github.com/aravindsrinivas/flowpp/tree/master/flows_celeba.
-2. Convert .npy files to .pth using `preprocessing/convert_to_pth`.
-3. Place in `data/celebahq64_5bit`.
-
-CelebAHQ 256x256:
-```
-# Download Glow's preprocessed dataset.
-wget https://storage.googleapis.com/glow-demo/data/celeba-tfr.tar
-tar -C data/celebahq -xvf celeb-tfr.tar
-python extract_celeba_from_tfrecords
-```
-
-
-
-## Density Estimation Experiments
-
-CAMELYON17 256 x 256
-
-```
-python train_img.py \
- --data custom \
- --dataset 17 \
- --train_centers 1 \
- --val_centers 1 \
- --train_path /nfs/managed_datasets/CAMELYON17/training/center_XX \
- --valid_path /nfs/managed_datasets/CAMELYON17/training/center_XX \
- --val_split 0.2 \
- --imagesize 256 \
- --batchsize 8 \
- --val-batchsize 8 \
- --actnorm True \
- --act elu \
- --wd 0 \
- --update-freq 5 \
- --n-exact-terms 8 \
- --fc-end False \
- --squeeze-first True \
- --save experiments/examode256 \
- --nblocks 16-16-16
- ```
-
-MNIST:
-```
-python train_img.py --data mnist --imagesize 28 --actnorm True --wd 0 --save experiments/mnist
-```
-
-CIFAR10:
-```
-python train_img.py --data cifar10 --actnorm True --save experiments/cifar10
-```
-
-ImageNet 32x32:
-```
-python train_img.py --data imagenet32 --actnorm True --nblocks 32-32-32 --save experiments/imagenet32
-```
-
-ImageNet 64x64:
-```
-python train_img.py --data imagenet64 --imagesize 64 --actnorm True --nblocks 32-32-32 --factor-out True --squeeze-first True --save experiments/imagenet64
-```
-
-CelebAHQ 256x256:
-```
-python train_img.py --data celebahq --imagesize 256 --nbits 5 --actnorm True --act elu --batchsize 8 --update-freq 5 --n-exact-terms 8 --fc-end False --factor-out True --squeeze-first True --nblocks 16-16-16-16-16-16 --save experiments/celebahq256
-```
-
-## Pretrained Models
-
-Model checkpoints can be downloaded from [releases](https://github.com/rtqichen/residual-flows/releases/latest).
-
-Use the argument `--resume [checkpt.pth]` to evaluate or sample from the model. 
-
-Each checkpoint contains two sets of parameters, one from training and one containing the exponential moving average (EMA) accumulated over the course of training. Scripts will automatically use the EMA parameters for evaluation and sampling.
+# WP3 - EXAMODE COLOR INFORMATION with Residual Flows for Invertible Generative Modeling 
 
 ## Based on paper
 ```
@@ -114,3 +9,127 @@ Each checkpoint contains two sets of parameters, one from training and one conta
   year={2019}
 }
 ```
+
+- Flow-based generative models parameterize probability distributions through an
+invertible transformation and can be trained by maximum likelihood. Invertible
+residual networks provide a flexible family of transformations where only Lipschitz
+conditions rather than strict architectural constraints are needed for enforcing
+invertibility.
+- This application concerns the invertible mapping of the color information in histopathology Whole Slide Image patches
+
+
+- Color Information measures can be evaluated using: 
+    - Normalized Median Intensity (NMI) measure
+    - Standard deviation of NMI
+    - Coefficient of variation of NMI
+    
+    ref: <a href="https://pubmed.ncbi.nlm.nih.gov/26353368/">Stain Specific Standardization of Whole-Slide Histopathological Images</a>
+
+
+<p align="center">
+<img  width="250" height="250" src=_images/template.png> ==> <img  width="250" height="250" src=_images/clusters.png>
+</p>  
+> The tissue class membership, computed by the DCGMM (right)
+
+# Setup
+These steps ran on LISA this module environment, where we first clone and enable the 2020 software stack: 
+
+```
+cd ~
+git clone https://git.ia.surfsara.nl/environment-modules/environment-modules-lisa.git
+```
+
+Load Modules:
+```
+module purge
+module use ~/environment-modules-lisa
+module load 2020
+module load TensorFlow/2.1.0-foss-2019b-Python-3.7.4-CUDA-10.1.243
+```
+Install requirements:
+```
+pip install -r requirements.txt
+```
+
+Options:
+
+
+```
+python main.py --help
+>>>>>
+TF2 DCGMM model
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --eval_mode           Run in evaluation mode. If false, training mode is
+                        activated (default: False)
+  --img_size IMG_SIZE   Image size to use (default: 256)
+  --batch_size BATCH_SIZE
+                        Batch size to use (default: 1)
+  --epochs EPOCHS       Number of epochs for training. (default: 50)
+  --num_clusters NUM_CLUSTERS
+                        Number of tissue classes to use in DCGMM modelling
+                        (default: 4)
+  --dataset DATASET     Which dataset to use. "16" for CAMELYON16 or "17" for
+                        CAMELYON17 (default: 16)
+  --train_centers TRAIN_CENTERS [TRAIN_CENTERS ...]
+                        Centers for training. Use -1 for all (default: [-1])
+  --val_centers VAL_CENTERS [VAL_CENTERS ...]
+                        Centers for validation. Use -1 for all (default: [-1])
+  --train_path TRAIN_PATH
+                        Folder of where the training data is located (default:
+                        None)
+  --valid_path VALID_PATH
+                        Folder where the validation data is located (default:
+                        None)
+  --logdir LOGDIR       Folder where to log tensorboard and model checkpoints
+                        (default: logs)
+  --template_path TEMPLATE_PATH
+                        Folder where template images are stored for
+                        deployment. (default: template)
+  --images_path IMAGES_PATH
+                        Path where images to normalize are located (default:
+                        images)
+  --load_path LOAD_PATH
+                        Path where to load model from (default:
+                        logs/train_data)
+  --save_path SAVE_PATH
+                        Where to save normalized images (default: norm_images)
+  --legacy_conversion   Legacy HSD conversion (default: True)
+  --normalize_imgs      Normalize images between -1 and 1 (default: True)
+  --log_every LOG_EVERY
+                        Log every X steps during training (default: 100)
+  --save_every SAVE_EVERY
+                        Save a checkpoint every X steps (default: 5000)
+  --debug               If running in debug mode (only 10 images) (default:
+                        False)
+  --val_split VAL_SPLIT
+```
+### Training
+```
+python3 main.py \
+--img_size 256 \
+--batch_size 16 \
+--epochs 5 \
+--num_clusters 4 \
+--train_path /nfs/managed_datasets/CAMELYON17/training/center_1/patches_positive_256 \
+--legacy_conversion
+```
+
+- This will train the DCGMM for 5 epochs, and save summaries and checkpoints in `/logs` (default)
+
+### Evaluation
+```
+python3 main.py \
+--img_size 256 \
+--template_path /nfs/managed_datasets/CAMELYON17/training/center_1/patches_positive_256 \ # specify template directory
+--images_path /nfs/managed_datasets/CAMELYON17/training/center_1/patches_positive_256 \   # specify target images directory
+--load_path ~/examode/deeplab/DCGMM_TF2.1/logs/train_data/256-tr1-val1/checkpoint_4336 \  # specify checkpoint directory
+--legacy_conversion \
+--eval_mode \
+--save_path saved_images                                                                  # specify save path to save transformed images
+```
+
+### TODO
+- [ ] Implement multi node framework (Horovod)
+
