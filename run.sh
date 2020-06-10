@@ -41,14 +41,33 @@ module list
  --fc-end False \
  --squeeze-first False \
  --factor-out True \
- --save experiments/delete \
+ --save experiments/test \
  --nblocks 16 \
- --gmmsteps 1000 \
- --vis-freq 2 \
- --resume /home/rubenh/examode/color-information/experiments/gmm11/models/most_recent.pth \
+ --vis-freq 50 \
  --nepochs 5 
 
-
+ python train_img.py \
+ --data custom \
+ --dataset 17 \
+ --train_centers 1 \
+ --val_centers 2 \
+ --train_path /nfs/managed_datasets/CAMELYON17/training/center_XX \
+ --valid_path /nfs/managed_datasets/CAMELYON17/training/center_XX \
+ --val_split 0.2 \
+ --imagesize 256 \
+ --batchsize 4 \
+ --val-batchsize 4 \
+ --actnorm True \
+ --nbits 8 \
+ --act swish \
+ --update-freq 1 \
+ --n-exact-terms 8 \
+ --fc-end False \
+ --squeeze-first False \
+ --factor-out True \
+ --save experiments/test \
+ --nblocks 16 \
+ --resume /home/rubenh/examode/color-information/experiments/gmm11/models/most_recent.pth \
 
 
  #--nblocks 16-16-16-16-16-16 \

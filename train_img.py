@@ -40,7 +40,7 @@ TODO:
 
 """
 # Arguments
-parser = argparse.ArgumentParser(description='Residual Flow Model', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+parser = argparse.ArgumentParser(description='Residual Flow Model Color Information', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument(
     '--data', type=str, default='custom', choices=[
         'custom'
@@ -49,8 +49,7 @@ parser.add_argument(
 # mnist
 parser.add_argument('--dataroot', type=str, default='data')
 ## GMM ##
-parser.add_argument('--nclusters', type=int, default=4)
-parser.add_argument('--gmmsteps', type=int, default=100)  # Only gmm 
+parser.add_argument('--nclusters', type=int, default=4,help='The amount of tissue classes trained upon')
 
 ## CAMELYON ##
 parser.add_argument('--dataset', type=str, default="17", help='Which dataset to use. "16" for CAMELYON16 or "17" for CAMELYON17')
@@ -71,16 +70,16 @@ parser.add_argument('--coeff', type=float, default=0.98)
 parser.add_argument('--vnorms', type=str, default='2222')
 parser.add_argument('--n-lipschitz-iters', type=int, default=None)
 parser.add_argument('--sn-tol', type=float, default=1e-3)
-parser.add_argument('--learn-p', type=eval, choices=[True, False], default=False)
+parser.add_argument('--learn-p', type=eval, choices=[True, False], default=False,help='Learn Lipschitz norms, see paper')
 
-parser.add_argument('--n-power-series', type=int, default=None)
-parser.add_argument('--factor-out', type=eval, choices=[True, False], default=False)
+parser.add_argument('--n-power-series', type=int, default=None, help='Amount of power series evaluated, see paper')
+parser.add_argument('--factor-out', type=eval, choices=[True, False], default=False,help='Factorize dimensions, see paper')
 parser.add_argument('--n-dist', choices=['geometric', 'poisson'], default='poisson')
 parser.add_argument('--n-samples', type=int, default=1)
-parser.add_argument('--n-exact-terms', type=int, default=2)
+parser.add_argument('--n-exact-terms', type=int, default=2,help='Exact terms computed in series estimation, see paper')
 parser.add_argument('--var-reduc-lr', type=float, default=0)
-parser.add_argument('--neumann-grad', type=eval, choices=[True, False], default=True)
-parser.add_argument('--mem-eff', type=eval, choices=[True, False], default=True)
+parser.add_argument('--neumann-grad', type=eval, choices=[True, False], default=True,help='Neumann gradients, see paper')
+parser.add_argument('--mem-eff', type=eval, choices=[True, False], default=True,help='Memory efficient backprop, see paper')
 
 parser.add_argument('--act', type=str, choices=ACT_FNS.keys(), default='swish')
 parser.add_argument('--idim', type=int, default=512)
@@ -1017,7 +1016,9 @@ def visualize(epoch, model, gmm, itr, real_imgs, global_itr):
 
         X_conv = imgtf.image_dist_transform(X_hsd, mu, std, pi, mu_tmpl, std_tmpl, args)
 
-        im_tmpl = real_imgs[random.randint(0,args.batchsize-1),...].cpu().numpy()
+        # save a random image from the batch
+        im_no = random.randint(0,args.batchsize-1) 
+        im_tmpl = real_imgs[im_no,...].cpu().numpy()
         im_tmpl = np.swapaxes(im_tmpl,0,1)
         im_tmpl = np.swapaxes(im_tmpl,1,-1)
         im_tmpl = imgtf.HSD2RGB_Numpy(im_tmpl)
@@ -1025,7 +1026,7 @@ def visualize(epoch, model, gmm, itr, real_imgs, global_itr):
         im_tmpl = Image.fromarray(im_tmpl)
         im_tmpl.save(os.path.join(args.save,'imgs',f'im_tmpl_{global_itr}.png'))
         
-        im_test = x_test[random.randint(0,args.batchsize-1),...].cpu().numpy()
+        im_test = x_test[im_no,...].cpu().numpy()
         im_test = np.swapaxes(im_test,0,1)
         im_test = np.swapaxes(im_test,1,-1)
         im_test = imgtf.HSD2RGB_Numpy(im_test)
@@ -1038,7 +1039,7 @@ def visualize(epoch, model, gmm, itr, real_imgs, global_itr):
         im_D = Image.fromarray(im_D,'L')
         im_D.save(os.path.join(args.save,'imgs',f'im_D_{global_itr}.png'))
         
-        im_conv = X_conv[random.randint(0,args.batchsize-1),...].reshape(args.imagesize,args.imagesize,3)
+        im_conv = X_conv[im_no,...].reshape(args.imagesize,args.imagesize,3)
         im_conv = Image.fromarray(im_conv)
         im_conv.save(os.path.join(args.save,'imgs',f'im_conv_{global_itr}.png'))
         
