@@ -14,6 +14,7 @@ from skimage import io
 from joblib import Parallel, delayed
 import multiprocessing
 from PIL import Image
+import random
 
 import torch
 import torchvision
@@ -456,7 +457,7 @@ elif args.data == 'custom':
     train_dataset = make_dataset(image_list, mask_list,train=True)
     test_dataset  = make_dataset(val_image_list, val_mask_list,train=False)
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batchsize, shuffle=True, num_workers=args.nworkers)
-    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=args.batchsize, shuffle=False, num_workers=args.nworkers)
+    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=args.val_batchsize, shuffle=False, num_workers=args.nworkers)
 
 if args.task in ['classification', 'hybrid','gmm']:
     try:
@@ -667,8 +668,6 @@ def train(epoch, model,gmm):
     end = time.time()
     for i, (x, y) in enumerate(train_loader):
         
-        # x = x[0,...].unsqueeze(0)
-        # y = y[0,...].unsqueeze(0)
         x = x.to(device)
         # for i in range(args.gmmsteps):
         global_itr = epoch * len(train_loader) + i
@@ -752,14 +751,15 @@ def train(epoch, model,gmm):
     return
 
 
-def validate(epoch, model, ema=None):
+def validate(epoch, model,gmm, ema=None):
     """
     - Deploys the color normalization on test image dataset
     - Evaluates NMI / CV / SD
     # Evaluates the cross entropy between p_data and p_model.
     """
     print("Starting Validation")
-    
+    model = parallelize(model)
+    gmm   = parallelize(gmm)
     bpd_meter = utils.AverageMeter()
     ce_meter = utils.AverageMeter()
 
@@ -768,17 +768,17 @@ def validate(epoch, model, ema=None):
 
     update_lipschitz(model)
 
-    model = parallelize(model)
     model.eval()
+    gmm.eval()
 
     mu_tmpl = 0
     std_tmpl = 0
     N = 0
     
 
-    print("Deploying on templates...")
-    for x, y in train_loader:
-
+    print(f"Deploying on {len(train_loader)} templates...")
+    for idx, (x, y) in enumerate(train_loader):
+        t1 = time.time()
         x = x.to(device)
         ### TEMPLATES ###
         D = x[:,0,...].unsqueeze(1)
@@ -814,7 +814,10 @@ def validate(epoch, model, ema=None):
         mu_tmpl  = (N-1)/N * mu_tmpl + 1/N* mu
         std_tmpl  = (N-1)/N * std_tmpl + 1/N* std
         
-        break
+        
+        if idx % 50 == 0: print(f"Image {idx} at { args.batchsize / (time.time() - t1) } imgs / sec")
+        
+        
       
     print("Estimated Mu for template(s):")
     print(mu_tmpl)
@@ -831,12 +834,12 @@ def validate(epoch, model, ema=None):
         metrics[f'nmi_{tc}']=[]
         metrics[f'sd_{tc}']=[]
         metrics[f'cv_{tc}']=[]
-    pdb.set_trace()
+    
     print("Predicting on templates...")
-    for x_test, y_test in test_loader:
-
+    for idx, (x_test, y_test) in enumerate(test_loader):
+        x_test = x_test.to(device)
         ### DEPLOY ###
-        D = x_test[0,0,...].unsqueeze(0).unsqueeze(1)
+        D = x_test[:,0,...].unsqueeze(1)
         D = rescale(D) # Scale to [0,1] interval
         D = D.repeat(1, args.nclusters, 1, 1)
         with torch.no_grad():
@@ -852,7 +855,7 @@ def validate(epoch, model, ema=None):
             else:
                 logpz, params = gmm(z.view(-1,args.nclusters,args.imagesize,args.imagesize), x_test.permute(0,2,3,1))
 
-    
+        
         mu, std, pi =  params
         mu  = mu.cpu().numpy()
         std = std.cpu().numpy()
@@ -866,11 +869,10 @@ def validate(epoch, model, ema=None):
         std = np.swapaxes(std,0,1) # (3,4,1) -> (4,3,1)
         std = np.swapaxes(std,1,2) # (4,3,1) -> (4,1,3)
         
-    
         X_hsd = np.swapaxes(x_test.cpu().numpy(),1,2)
         X_hsd = np.swapaxes(X_hsd,2,3)
-
-        X_conv = imgtf.image_dist_transform(X_hsd, mu, std, pi, mu_tmpl, std_tmpl, args.imagesize, args.nclusters)
+        
+        X_conv = imgtf.image_dist_transform(X_hsd, mu, std, pi, mu_tmpl, std_tmpl, args)
         
         ClsLbl = np.argmax(np.asarray(pi),axis=-1)
         ClsLbl = ClsLbl.astype('int32')
@@ -887,6 +889,9 @@ def validate(epoch, model, ema=None):
             metrics[f'median_{tc}'].append(median)
             metrics[f'perc_95_{tc}'].append(perc)
             metrics[f'nmi_{tc}'].append(nmi)
+            
+        if idx % 50 == 0: print(f"Image {idx} at { 1 / (time.time() - t1) } imgs / sec")
+        
   
     av_sd = []
     av_cv = []
@@ -902,7 +907,7 @@ def validate(epoch, model, ema=None):
     print(f"Average sd = {np.array(av_sd).mean()}")
     print(f"Average cv = {np.array(av_cv).mean()}")
     import csv
-    file = open(f"metrics-{args.train_centers}-{args.val_centers}.csv","w")
+    file = open(f"metrics-{args.train_centers[0]}-{args.val_centers[0]}.csv","w")
     writer = csv.writer(file)
     for key, value in metrics.items():
         writer.writerow([key, value])
@@ -939,46 +944,16 @@ def visualize(epoch, model, gmm, itr, real_imgs, global_itr):
     model.eval()
     gmm.eval()
     utils.makedirs(os.path.join(args.save, 'imgs'))
-    # real_imgs = real_imgs[:32]
-    # _real_imgs = real_imgs
-    # if args.data == 'celeba_5bit':
-    #     nvals = 32
-    # elif args.data == 'celebahq' or args.data =='custom':
-    #     nvals = 2**args.nbits
-    # else:
-    #     nvals = 256
-    
-    # with torch.no_grad():
-    #     # reconstructed real images
-    #     real_imgs, _ = add_padding(real_imgs, nvals)
-    #     if args.squeeze_first: real_imgs = squeeze_layer(real_imgs)
-    #     recon_imgs = model(model(real_imgs.view(-1, *input_size[1:])), inverse=True).view(-1, *input_size[1:])
-    #     if args.squeeze_first: recon_imgs = squeeze_layer.inverse(recon_imgs)
-    #     recon_imgs = remove_padding(recon_imgs)
 
-    #     # random samples
-    #     fake_imgs = model(fixed_z, inverse=True).view(-1, *input_size[1:])
-    #     if args.squeeze_first: fake_imgs = squeeze_layer.inverse(fake_imgs)
-    #     fake_imgs = remove_padding(fake_imgs)
-
-    #     fake_imgs = fake_imgs.view(-1, im_dim, args.imagesize, args.imagesize)
-    #     recon_imgs = recon_imgs.view(-1, im_dim, args.imagesize, args.imagesize)
-    #     _real_imgs = torch.reshape(_real_imgs,fake_imgs.shape)
-    #     imgs = torch.cat([_real_imgs, fake_imgs, recon_imgs], 0)
-
-    #     filename = os.path.join(args.save, 'imgs', 'e{:03d}_i{:06d}.png'.format(epoch, itr))
-    #     save_image(imgs.cpu().float(), filename, nrow=16, padding=2)
-        # save_image(imgs.cpu().int(), 'int'+filename, nrow=16, padding=2)
-        
     for x_test, y_test in test_loader:
-        x_test = x_test[0,...].unsqueeze(0)
-        y_test = y_test[0,...].unsqueeze(0)
+        # x_test = x_test[0,...].unsqueeze(0)
+        # y_test = y_test[0,...].unsqueeze(0)
         x_test = x_test.to(device)
         ### TEMPLATES ###
-        D = real_imgs[0,0,...].unsqueeze(0).unsqueeze(1)
+        D = real_imgs[:,0,...].unsqueeze(1)
         D = rescale(D) # Scale to [0,1] interval
         D = D.repeat(1, args.nclusters, 1, 1)
-        x = real_imgs[0,...].unsqueeze(0)
+        x = real_imgs
         with torch.no_grad():
             if isinstance(model,torch.nn.DataParallel):
                 z_logp = model.module(D.view(-1, *input_size[1:]), 0, classify=False)
@@ -1004,9 +979,9 @@ def visualize(epoch, model, gmm, itr, real_imgs, global_itr):
         std_tmpl = np.swapaxes(std_tmpl,0,1) # (3,4,1) -> (4,3,1)
         std_tmpl = np.swapaxes(std_tmpl,1,2) # (4,3,1) -> (4,1,3)
         
-        
+            
         ### DEPLOY ###
-        D = x_test[0,0,...].unsqueeze(0).unsqueeze(1)
+        D = x_test[:,0,...].unsqueeze(1)
         D = rescale(D) # Scale to [0,1] interval
         D = D.repeat(1, args.nclusters, 1, 1)
         with torch.no_grad():
@@ -1040,20 +1015,20 @@ def visualize(epoch, model, gmm, itr, real_imgs, global_itr):
         X_hsd = np.swapaxes(x_test.cpu().numpy(),1,2)
         X_hsd = np.swapaxes(X_hsd,2,3)
 
-        X_conv = imgtf.image_dist_transform(X_hsd, mu, std, pi, mu_tmpl, std_tmpl, args.imagesize, args.nclusters)
-        
-        im_tmpl = real_imgs.cpu().numpy()
-        im_tmpl = np.swapaxes(im_tmpl,1,2)
-        im_tmpl = np.swapaxes(im_tmpl,2,3)
-        im_tmpl = imgtf.HSD2RGB_Numpy(im_tmpl[0])
+        X_conv = imgtf.image_dist_transform(X_hsd, mu, std, pi, mu_tmpl, std_tmpl, args)
+
+        im_tmpl = real_imgs[random.randint(0,args.batchsize-1),...].cpu().numpy()
+        im_tmpl = np.swapaxes(im_tmpl,0,1)
+        im_tmpl = np.swapaxes(im_tmpl,1,-1)
+        im_tmpl = imgtf.HSD2RGB_Numpy(im_tmpl)
         im_tmpl = (im_tmpl*255).astype('uint8')
         im_tmpl = Image.fromarray(im_tmpl)
         im_tmpl.save(os.path.join(args.save,'imgs',f'im_tmpl_{global_itr}.png'))
         
-        im_test = x_test.cpu().numpy()
-        im_test = np.swapaxes(im_test,1,2)
-        im_test = np.swapaxes(im_test,2,3)
-        im_test = imgtf.HSD2RGB_Numpy(im_test[0])
+        im_test = x_test[random.randint(0,args.batchsize-1),...].cpu().numpy()
+        im_test = np.swapaxes(im_test,0,1)
+        im_test = np.swapaxes(im_test,1,-1)
+        im_test = imgtf.HSD2RGB_Numpy(im_test)
         im_test = (im_test*255).astype('uint8')
         im_test = Image.fromarray(im_test)
         im_test.save(os.path.join(args.save,'imgs',f'im_test_{global_itr}.png'))
@@ -1063,7 +1038,7 @@ def visualize(epoch, model, gmm, itr, real_imgs, global_itr):
         im_D = Image.fromarray(im_D,'L')
         im_D.save(os.path.join(args.save,'imgs',f'im_D_{global_itr}.png'))
         
-        im_conv = (X_conv*255).astype('uint8')
+        im_conv = X_conv[random.randint(0,args.batchsize-1),...].reshape(args.imagesize,args.imagesize,3)
         im_conv = Image.fromarray(im_conv)
         im_conv.save(os.path.join(args.save,'imgs',f'im_conv_{global_itr}.png'))
         
@@ -1103,7 +1078,6 @@ def visualize(epoch, model, gmm, itr, real_imgs, global_itr):
         
         model.train()
         gmm.train()
-        
         return
 
 
@@ -1154,7 +1128,7 @@ def main():
     ords = []
 
     if args.resume:
-        validate(args.begin_epoch - 1, model, ema)
+        validate(args.begin_epoch - 1, model,gmm, ema)
         sys.exit(0)
         
     for epoch in range(args.begin_epoch, args.nepochs):
