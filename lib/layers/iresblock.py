@@ -80,7 +80,6 @@ class iResBlock(nn.Module):
 
     def _logdetgrad(self, x):
         """Returns g(x) and logdet|d(x+g(x))/dx|."""
-
         with torch.enable_grad():
             if (self.brute_force or not self.training) and (x.ndimension() == 2 and x.shape[1] == 2):
                 ###########################################
@@ -202,6 +201,8 @@ class MemoryEfficientLogDetEstimator(torch.autograd.Function):
                 if grad_x is None:
                     grad_x = torch.zeros_like(x)
                 ctx.save_for_backward(grad_x, *g_params, *grad_params)
+                
+                
 
         return safe_detach(g), safe_detach(logdetgrad)
 

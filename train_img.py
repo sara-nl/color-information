@@ -15,7 +15,11 @@ from joblib import Parallel, delayed
 import multiprocessing
 from PIL import Image
 import random
-
+import torch.utils.data.distributed
+#import horovod.torch as hvd
+import torch.multiprocessing as mp
+import torch.distributed as dist
+from tqdm import tqdm
 import torch
 import torchvision
 import torchvision.transforms as transforms
@@ -59,6 +63,7 @@ parser.add_argument('--train_path', type=str, help='Folder of where the training
 parser.add_argument('--valid_path', type=str, help='Folder where the validation data is located', default=None)
 parser.add_argument('--val_split', type=float, default=0.15)
 parser.add_argument('--debug', action='store_true', help='If running in debug mode')
+parser.add_argument('--fp16_allreduce', action='store_true', help='If all reduce in fp16')
 ##
 parser.add_argument('--imagesize', type=int, default=32)
 # 28
@@ -137,10 +142,11 @@ utils.makedirs(args.save)
 logger = utils.get_logger(logpath=os.path.join(args.save, 'logs'), filepath=os.path.abspath(__file__))
 logger.info(args)
 
-device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 if device.type == 'cuda':
     logger.info('Found {} CUDA devices.'.format(torch.cuda.device_count()))
+
     for i in range(torch.cuda.device_count()):
         props = torch.cuda.get_device_properties(i)
         logger.info('{} \t Memory: {:.2f}GB'.format(props.name, props.total_memory / (1024**3)))
@@ -151,7 +157,6 @@ np.random.seed(args.seed)
 torch.manual_seed(args.seed)
 if device.type == 'cuda':
     torch.cuda.manual_seed(args.seed)
-
 
 
 
@@ -421,6 +426,10 @@ class make_dataset(torch.utils.data.Dataset):
         sample = (image ,mask)
         return sample
 
+
+
+
+
 # Dataset and hyperparameters
 if args.data == 'celebahq':
     im_dim = 3
@@ -455,8 +464,11 @@ elif args.data == 'custom':
     image_list, mask_list, val_image_list, val_mask_list, sample_weight_list = get_image_lists(args)
     train_dataset = make_dataset(image_list, mask_list,train=True)
     test_dataset  = make_dataset(val_image_list, val_mask_list,train=False)
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batchsize, shuffle=True, num_workers=args.nworkers)
-    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=args.val_batchsize, shuffle=False, num_workers=args.nworkers)
+    
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batchsize, shuffle=True)
+
+    
+    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=args.val_batchsize, shuffle=False)
 
 if args.task in ['classification', 'hybrid','gmm']:
     try:
@@ -475,6 +487,8 @@ dataset_size = len(train_loader.dataset)
 if args.squeeze_first:
     input_size = (input_size[0], input_size[1] * 4, input_size[2] // 2, input_size[3] // 2)
     squeeze_layer = layers.SqueezeLayer(2)
+
+
 
 # Model
 model = ResidualFlow(
@@ -513,16 +527,20 @@ model = ResidualFlow(
     block_type=args.block,
 )
 
-model.to(device)
+
 
 # Custom
 gmm = gmm(input_size,args,num_clusters=args.nclusters)
-gmm.to(device)
+
 ema = utils.ExponentialMovingAverage(model)
 
 def parallelize(model):
     return torch.nn.DataParallel(model)
 
+model = parallelize(model)
+gmm   = parallelize(gmm)
+model.to(device)
+gmm.to(device)
 
 logger.info(model)
 logger.info('EMA: {}'.format(ema))
@@ -555,6 +573,8 @@ elif args.optimizer == 'sgd':
 else:
     raise ValueError('Unknown optimizer {}'.format(args.optimizer))
 
+
+
 best_test_bpd = math.inf
 if (args.resume is not None):
     logger.info('Resuming model from {}'.format(args.resume))
@@ -563,8 +583,11 @@ if (args.resume is not None):
         model(x)
     checkpt = torch.load(args.resume)
     sd = {k: v for k, v in checkpt['state_dict'].items() if 'last_n_samples' not in k}
-    state = model.state_dict()
-    state.update(sd)
+    if not isinstance(model,torch.nn.DataParallel):
+        state = model.module.state_dict()
+    else:
+        state = model.state_dict()
+    # state.update(sd)
     model.load_state_dict(state, strict=True)
     ema.set(checkpt['ema'])
     if 'optimizer_state_dict' in checkpt:
@@ -659,15 +682,16 @@ ce_meter = utils.RunningAverageMeter(0.97)
 
 
 def train(epoch, model,gmm):
-    model = parallelize(model)
-    gmm   = parallelize(gmm)
+
     model.train()
     gmm.train()
 
+    
     end = time.time()
     for i, (x, y) in enumerate(train_loader):
         
         x = x.to(device)
+        
         # for i in range(args.gmmsteps):
         global_itr = epoch * len(train_loader) + i
         update_lr(optimizer, global_itr)
@@ -759,6 +783,10 @@ def validate(epoch, model,gmm, ema=None):
     print("Starting Validation")
     model = parallelize(model)
     gmm   = parallelize(gmm)
+    
+    model.to(device)
+    gmm.to(device)
+
     bpd_meter = utils.AverageMeter()
     ce_meter = utils.AverageMeter()
 
@@ -775,9 +803,9 @@ def validate(epoch, model,gmm, ema=None):
     N = 0
     
 
-    print(f"Deploying on {len(train_loader)} templates...")
-    for idx, (x, y) in enumerate(train_loader):
-        t1 = time.time()
+    print(f"Deploying on {len(train_loader)} batches of {args.batchsize} templates...")
+    idx = 0
+    for x, y in tqdm(train_loader):
         x = x.to(device)
         ### TEMPLATES ###
         D = x[:,0,...].unsqueeze(1)
@@ -813,8 +841,9 @@ def validate(epoch, model,gmm, ema=None):
         mu_tmpl  = (N-1)/N * mu_tmpl + 1/N* mu
         std_tmpl  = (N-1)/N * std_tmpl + 1/N* std
         
-        
-        if idx % 50 == 0: print(f"Image {idx} at { args.batchsize / (time.time() - t1) } imgs / sec")
+        if idx == len(train_loader) - 1: break
+        idx+=1
+                
         
         
       
@@ -834,8 +863,9 @@ def validate(epoch, model,gmm, ema=None):
         metrics[f'sd_{tc}']=[]
         metrics[f'cv_{tc}']=[]
     
-    print("Predicting on templates...")
-    for idx, (x_test, y_test) in enumerate(test_loader):
+    print(f"Predicting on {len(test_loader)} batches of {args.val_batchsize} templates...")
+    idx=0
+    for x_test, y_test in tqdm(test_loader):
         x_test = x_test.to(device)
         ### DEPLOY ###
         D = x_test[:,0,...].unsqueeze(1)
@@ -888,8 +918,9 @@ def validate(epoch, model,gmm, ema=None):
             metrics[f'median_{tc}'].append(median)
             metrics[f'perc_95_{tc}'].append(perc)
             metrics[f'nmi_{tc}'].append(nmi)
-            
-        if idx % 50 == 0: print(f"Image {idx} at { 1 / (time.time() - t1) } imgs / sec")
+        
+        if idx == len(test_loader) - 1: break
+        idx+=1
         
   
     av_sd = []
@@ -1136,6 +1167,7 @@ def main():
 
         logger.info('Current LR {}'.format(optimizer.param_groups[0]['lr']))
 
+        
         train(epoch, model, gmm)
         lipschitz_constants.append(get_lipschitz_constants(model))
         ords.append(get_ords(model))
