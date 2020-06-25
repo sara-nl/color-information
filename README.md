@@ -74,7 +74,8 @@ Options:
 
 
 ```
-python train_img.py --help
+python train_img_horo.py --help
+
 >>>>>
 Residual Flow Model Color Information
 
@@ -157,6 +158,8 @@ optional arguments:
                         minibatch size (default: 200)
   --seed SEED
   --ema-val {True,False}
+                        Use exponential moving averages of parameters at
+                        validation. (default: False)
   --update-freq UPDATE_FREQ
   --task {density,classification,hybrid,gmm}
   --scale-dim {True,False}
@@ -164,7 +167,7 @@ optional arguments:
   --padding-dist {uniform,gaussian}
   --resume RESUME
   --save_conv SAVE_CONV
-                        Save converted images
+                        Save converted images. (default: False)
   --begin-epoch BEGIN_EPOCH
   --nworkers NWORKERS
   --print-freq PRINT_FREQ
