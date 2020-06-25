@@ -116,7 +116,7 @@ parser.add_argument('--annealing-iters', type=int, default=0)
 parser.add_argument('--save', help='directory to save results', type=str, default='experiment1')
 parser.add_argument('--val-batchsize', help='minibatch size', type=int, default=200)
 parser.add_argument('--seed', type=int, default=None)
-parser.add_argument('--ema-val', type=eval, choices=[True, False], default=False)
+parser.add_argument('--ema-val', type=eval, help='Use exponential moving averages of parameters at validation.', choices=[True, False], default=False)
 parser.add_argument('--update-freq', type=int, default=1)
 
 parser.add_argument('--task', type=str, choices=['density', 'classification', 'hybrid','gmm'], default='gmm')
@@ -125,7 +125,7 @@ parser.add_argument('--rcrop-pad-mode', type=str, choices=['constant', 'reflect'
 parser.add_argument('--padding-dist', type=str, choices=['uniform', 'gaussian'], default='uniform')
 
 parser.add_argument('--resume', type=str, default=None)
-parser.add_argument('--save_conv', type=eval, default=False)
+parser.add_argument('--save_conv', type=eval,help='Save converted images.', default=False)
 parser.add_argument('--begin-epoch', type=int, default=0)
 
 
