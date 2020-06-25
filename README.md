@@ -214,8 +214,8 @@ optional arguments:
  mpirun -map-by ppr:4:node -np 8 -x LD_LIBRARY_PATH -x PATH python -u train_img_horo.py \
  --data custom \
  --fp16_allreduce \
- --train_path /home/rubenh/examode/deeplab/CAMELYON16_PREPROCESSING/Radboudumc \
- --valid_path /home/rubenh/examode/deeplab/CAMELYON16_PREPROCESSING/TCGA \
+ --train_path /home/rubenh/examode/deeplab/CAMELYON16_PREPROCESSING/Radboudumc \    # Insert template path
+ --valid_path /home/rubenh/examode/deeplab/CAMELYON16_PREPROCESSING/TCGA \          # Insert target path  
  --imagesize 256 \
  --batchsize 4 \
  --val-batchsize 4 \
@@ -228,11 +228,12 @@ optional arguments:
  --squeeze-first False \
  --factor-out True \
  --save experiments/test \
- --nblocks 16 \
+ --nblocks 21 \                                                                     # Make sure model is as large as checkpoint
+ --nclusters 3 \                                                                    # Check no. of clusters of checkpoint
  --vis-freq 10 \
  --nepochs 5 \
  --resume /home/rubenh/examode/color-information/checkpoints/Radboudumc_8_workers.pth \
- --save_conv False
+ --save_conv False                                                                  # Set to save converted images
 
 # CAMELYON
 
@@ -261,5 +262,5 @@ optional arguments:
 ```
 
 ### TODO
-- [ ] Implement multi node framework (Horovod)
+- [x] Implement multi node framework (Horovod)
 
