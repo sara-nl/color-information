@@ -48,6 +48,23 @@ module use ~/environment-modules-lisa
 module load 2020
 module load TensorFlow/2.1.0-foss-2019b-Python-3.7.4-CUDA-10.1.243
 ```
+Set Environment Variables:
+```
+# Setting ENV variables
+export HOROVOD_CUDA_HOME=$CUDA_HOME
+export HOROVOD_CUDA_INCLUDE=$CUDA_HOME/include
+export HOROVOD_CUDA_LIB=$CUDA_HOME/lib64
+export HOROVOD_NCCL_HOME=$EBROOTNCCL
+export HOROVOD_GPU_ALLREDUCE=NCCL
+# Export MPICC
+export MPICC=mpicc
+export MPICXX=mpicpc
+export HOROVOD_MPICXX_SHOW="mpicxx --showme:link"
+export HOROVOD_WITH_PYTORCH=1
+```
+
+
+
 Install requirements:
 ```
 pip install -r requirements.txt
@@ -68,7 +85,7 @@ optional arguments:
   --nclusters NCLUSTERS
                         The amount of tissue classes trained upon (default: 4)
   --dataset DATASET     Which dataset to use. "16" for CAMELYON16 or "17" for
-                        CAMELYON17 (default: 17)
+                        CAMELYON17 (default: 0)
   --train_centers TRAIN_CENTERS [TRAIN_CENTERS ...]
                         Centers for training. Use -1 for all, otherwise 2 3 4
                         eg. (default: [-1])
@@ -83,6 +100,7 @@ optional arguments:
                         None)
   --val_split VAL_SPLIT
   --debug               If running in debug mode (default: False)
+  --fp16_allreduce      If all reduce in fp16 (default: False)
   --imagesize IMAGESIZE
   --nbits NBITS
   --block {resblock,coupling}
@@ -145,11 +163,15 @@ optional arguments:
   --rcrop-pad-mode {constant,reflect}
   --padding-dist {uniform,gaussian}
   --resume RESUME
+  --save_conv SAVE_CONV
+                        Save converted images
   --begin-epoch BEGIN_EPOCH
   --nworkers NWORKERS
   --print-freq PRINT_FREQ
                         Print progress every so iterations (default: 1)
   --vis-freq VIS_FREQ   Visualize progress every so iterations (default: 5)
+  --save-every SAVE_EVERY
+                        VSave model every so epochs (default: 1)
 ```
 ### Training
 ```
@@ -184,6 +206,33 @@ optional arguments:
 
 ### Evaluation
 ```
+# CUSTOM DATA
+
+ mpirun -map-by ppr:4:node -np 8 -x LD_LIBRARY_PATH -x PATH python -u train_img_horo.py \
+ --data custom \
+ --fp16_allreduce \
+ --train_path /home/rubenh/examode/deeplab/CAMELYON16_PREPROCESSING/Radboudumc \
+ --valid_path /home/rubenh/examode/deeplab/CAMELYON16_PREPROCESSING/TCGA \
+ --imagesize 256 \
+ --batchsize 4 \
+ --val-batchsize 4 \
+ --actnorm True \
+ --nbits 8 \
+ --act swish \
+ --update-freq 1 \
+ --n-exact-terms 8 \
+ --fc-end False \
+ --squeeze-first False \
+ --factor-out True \
+ --save experiments/test \
+ --nblocks 16 \
+ --vis-freq 10 \
+ --nepochs 5 \
+ --resume /home/rubenh/examode/color-information/checkpoints/Radboudumc_8_workers.pth \
+ --save_conv False
+
+# CAMELYON
+
  python train_img.py \
  --data custom \
  --dataset 17 \             # CAMELYON 17
