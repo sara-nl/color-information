@@ -22,8 +22,6 @@ export MPICC=mpicc
 export MPICXX=mpicpc
 export HOROVOD_MPICXX_SHOW="mpicxx --showme:link"
 export HOROVOD_WITH_PYTORCH=1
-#VIRTENV=RES_FLOWS
-#VIRTENV_ROOT=~/virtualenvs
 
 
 #rm -rf experiments/*
@@ -35,15 +33,14 @@ pip install horovod
 #pip install scikit-image
  
  
- #mpirun -map-by ppr:4:node -np 4 -x LD_LIBRARY_PATH -x PATH -mca pml ob1 -mca btl ^openib python -u train_img.py \
- #python train_img.py \
- cd ~/examode/color-information
+
+cd ~/examode/color-information
  
 
 
- 
+#/nfs/managed_datasets/CAMELYON17/training/center_1/patches_positive_256 
 
- mpirun -map-by ppr:4:node -np $np -x LD_LIBRARY_PATH -x PATH python -u train_img_horo.py \
+mpirun -map-by ppr:4:node -np 8 -x LD_LIBRARY_PATH -x PATH python -u train_img_horo.py \
  --data custom \
  --fp16_allreduce \
  --train_path /home/rubenh/examode/deeplab/CAMELYON16_PREPROCESSING/Radboudumc \
@@ -59,13 +56,15 @@ pip install horovod
  --fc-end False \
  --squeeze-first False \
  --factor-out True \
- --save experiments/RadCAM16 \
- --nblocks 16 \
+ --save experiments/Radboudumc \
+ --nblocks 21 \
+ --nclusters 3 \
  --vis-freq 10 \
  --nepochs 5 \
- --resume /home/rubenh/examode/color-information/experiments/Radboudumc/models/most_recent_8_workers.pth \
+ --resume /home/rubenh/examode/color-information/checkpoints/Radboudumc_8_workers.pth \
  --save_conv True
 
+exit
 
 """
 TRAINING

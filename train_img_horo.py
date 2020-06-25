@@ -5,6 +5,7 @@ import os
 import os.path
 import numpy as np
 from tqdm import tqdm
+import matplotlib.pyplot as plt
 import gc
 import sys
 import pdb
@@ -916,14 +917,6 @@ def validate(epoch, model,gmm, ema=None):
 
         
         mu, std, gamma =  params
-        if rank00(): print("Allreduce mu / std / gamma ...")
-        mu   = hvd.allreduce(mu.contiguous())
-        std  = hvd.allreduce(std.contiguous())
-        gamma= hvd.allreduce(gamma.contiguous())
-        if rank00(): print("Broadcast mu / std / gamma ...")
-        hvd.broadcast(mu,0)
-        hvd.broadcast(std,0)
-        hvd.join()
         
         mu  = mu.cpu().numpy()
         std = std.cpu().numpy()
@@ -942,20 +935,28 @@ def validate(epoch, model,gmm, ema=None):
         mu_tmpl  = (N-1)/N * mu_tmpl + 1/N* mu
         std_tmpl  = (N-1)/N * std_tmpl + 1/N* std
         
-        if idx % 50 == 0 and rank00(): print(f"Image {idx} at { hvd.size()*args.batchsize / (time.time() - t1) } imgs / sec")
+        if idx % 50 == 0 and rank00(): print(f"Batch {idx} at { hvd.size()*args.batchsize / (time.time() - t1) } imgs / sec")
         
-        if args.save_conv and rank00():
+        if args.save_conv:
             # save images for transformation
-            im_tmpl = x[0].cpu().numpy()
-            im_tmpl = np.swapaxes(im_tmpl,0,1)
-            im_tmpl = np.swapaxes(im_tmpl,1,-1)
-            im_tmpl = imgtf.HSD2RGB_Numpy(im_tmpl)
-            im_tmpl = (im_tmpl*255).astype('uint8')
-            im_tmpl = Image.fromarray(im_tmpl)
-            im_tmpl.save(os.path.join(args.save,'imgs',f'im_tmpl-{idx}-eval.png'))
-            im_tmpl.close()
+            for ct, img in enumerate(x):
+                im_tmpl = img.cpu().numpy()
+                im_tmpl = np.swapaxes(im_tmpl,0,1)
+                im_tmpl = np.swapaxes(im_tmpl,1,-1)
+                im_tmpl = imgtf.HSD2RGB_Numpy(im_tmpl)
+                im_tmpl = (im_tmpl*255).astype('uint8')
+                im_tmpl = Image.fromarray(im_tmpl)
+                im_tmpl.save(os.path.join(args.save,'imgs',f'worker-{hvd.rank()}-batch-{idx}-im_tmpl-{ct}-eval.png'))
+                im_tmpl.close()
             
-            
+    if rank00(): print("Allreduce mu_tmpl / std_tmpl ...")
+    mu_tmpl   = hvd.allreduce(torch.tensor(mu_tmpl).contiguous())
+    std_tmpl  = hvd.allreduce(torch.tensor(std_tmpl).contiguous())
+    if rank00(): print("Broadcast mu_tmpl / std_tmpl ...")
+    hvd.broadcast(mu_tmpl,0)
+    hvd.broadcast(std_tmpl,0)
+    hvd.join()
+    
     if rank00():
         print("Estimated Mu for template(s):")
         print(mu_tmpl)
@@ -981,6 +982,7 @@ def validate(epoch, model,gmm, ema=None):
     for idx, (x_test, y_test) in enumerate(test_loader):
         # break one iter early to avoid out of sync
         if idx == len(test_loader) - 2: break
+        t1 = time.time()
         x_test = x_test.to(device)
         
 
@@ -1003,14 +1005,7 @@ def validate(epoch, model,gmm, ema=None):
 
         
         mu, std, pi =  params
-        if rank00(): print("Allreduce mu / std / pi ...")
-        mu   = hvd.allreduce(mu.contiguous())
-        std  = hvd.allreduce(std.contiguous())
-        pi   = hvd.allreduce(pi.contiguous())
-        if rank00(): print("Broadcast mu / std / pi ...")
-        hvd.broadcast(mu,0)
-        hvd.broadcast(std,0)
-        hvd.join()
+
             
         mu  = mu.cpu().numpy()
         std = std.cpu().numpy()
@@ -1044,52 +1039,55 @@ def validate(epoch, model,gmm, ema=None):
             metrics[f'median_{tc}'].append(median)
             metrics[f'perc_95_{tc}'].append(perc)
             metrics[f'nmi_{tc}'].append(nmi)
-            
-        hvd.join()
-        
-        if args.save_conv and rank00():
-            
-            im_test = x_test[0].cpu().numpy()
-            im_test = np.swapaxes(im_test,0,1)
-            im_test = np.swapaxes(im_test,1,-1)
-            im_test = imgtf.HSD2RGB_Numpy(im_test)
-            im_test = (im_test*255).astype('uint8')
-            im_test = Image.fromarray(im_test)
-            im_test.save(os.path.join(args.save,'imgs',f'im_test-{idx}-eval.png'))
-            im_test.close()
-            for img in X_conv:
+                    
+        if args.save_conv:
+            for ct, img in enumerate(x_test):
+                im_test = img.cpu().numpy()
+                im_test = np.swapaxes(im_test,0,1)
+                im_test = np.swapaxes(im_test,1,-1)
+                im_test = imgtf.HSD2RGB_Numpy(im_test)
+                im_test = (im_test*255).astype('uint8')
+                im_test = Image.fromarray(im_test)
+                im_test.save(os.path.join(args.save,'imgs',f'worker-{hvd.rank()}-batch-{idx}-im_test-{ct}-eval.png'))
+                im_test.close()
+            for ct, img in enumerate(X_conv):
                 im_conv = img.reshape(args.imagesize,args.imagesize,3)
                 im_conv = Image.fromarray(im_conv)
-                im_conv.save(os.path.join(args.save,'imgs',f'im_conv-{idx}-eval.png'))
+                im_conv.save(os.path.join(args.save,'imgs',f'worker-{hvd.rank()}-batch-{idx}-im_conv-{ct}-eval.png'))
                 im_conv.close()
-            savegamma(pi,f"{idx}-eval",pred=1)
+            
+            # savegamma(pi,f"{idx}-eval",pred=1)
         
         
-        if idx % 10 == 0 and rank00(): print(f"Image {idx} at { hvd.size()*args.batchsize / (time.time() - t1) } imgs / sec")
+        if idx % 10 == 0 and rank00(): print(f"Batch {idx} at { hvd.size()*args.batchsize / (time.time() - t1) } imgs / sec")
     
-    if rank00():
-        av_sd = []
-        av_cv = []
-        for tc in range(1,args.nclusters+1):
-            if len(metrics[f'mean_{tc}']) == 0: continue
-            metrics[f'sd_{tc}'] = np.array(metrics[f'nmi_{tc}']).std()
-            metrics[f'cv_{tc}'] = np.array(metrics[f'nmi_{tc}']).std() / np.array(metrics[f'nmi_{tc}']).mean()
-            print(f'sd_{tc}:', metrics[f'sd_{tc}'])
-            print(f'cv_{tc}:', metrics[f'cv_{tc}'])
-            av_sd.append(metrics[f'sd_{tc}'])
-            av_cv.append(metrics[f'cv_{tc}'])
-        
-        print(f"Average sd = {np.array(av_sd).mean()}")
-        print(f"Average cv = {np.array(av_cv).mean()}")
-        import csv
-        file = open(f"metrics-eval.csv","w")
-        writer = csv.writer(file)
-        for key, value in metrics.items():
-            writer.writerow([key, value])
-        
-        
-        file.close()
-        
+    av_sd = []
+    av_cv = []
+    for tc in range(1,args.nclusters+1):
+        if len(metrics[f'mean_{tc}']) == 0: continue
+        metrics[f'sd_{tc}'] = np.array(metrics[f'nmi_{tc}']).std()
+        metrics[f'cv_{tc}'] = np.array(metrics[f'nmi_{tc}']).std() / np.array(metrics[f'nmi_{tc}']).mean()
+        print(f'sd_{tc}:', metrics[f'sd_{tc}'])
+        print(f'cv_{tc}:', metrics[f'cv_{tc}'])
+        av_sd.append(metrics[f'sd_{tc}'])
+        av_cv.append(metrics[f'cv_{tc}'])
+    
+    # fig1, ax1 = plt.subplots()
+    # ax1.set_title('Box Plot Eval')
+    # ax1.boxplot(np.array(metrics[f'nmi_{tc}']))
+    
+    
+    print(f"Average sd = {np.array(av_sd).mean()}")
+    print(f"Average cv = {np.array(av_cv).mean()}")
+    import csv
+    file = open(f"worker-{hvd.rank()}-metrics-eval.csv","w")
+    writer = csv.writer(file)
+    for key, value in metrics.items():
+        writer.writerow([key, value])
+    
+    
+    file.close()
+    
 
     # correct = 0
     # total = 0
@@ -1293,7 +1291,7 @@ def main():
     ords = []
 
     if args.resume:
-        validate(args.begin_epoch - 1, model,gmm, ema)
+        validate(args.begin_epoch - 1, model,gmm)
         sys.exit(0)
         
     for epoch in range(args.begin_epoch, args.nepochs):
