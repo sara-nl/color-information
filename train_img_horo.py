@@ -1293,7 +1293,7 @@ def main():
     ords = []
 
     if args.resume:
-        validate(args.begin_epoch - 1, model,gmm, ema)
+        validate(args.begin_epoch - 1, model,gmm)
         sys.exit(0)
         
     for epoch in range(args.begin_epoch, args.nepochs):
