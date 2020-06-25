@@ -906,6 +906,7 @@ def validate(epoch, model,gmm, ema=None):
         ClsLbl = np.argmax(np.asarray(pi),axis=-1)
         ClsLbl = ClsLbl.astype('int32')
         mean_rgb = np.mean(X_conv,axis=-1)
+        pdb.set_trace()
         for tc in range(1,args.nclusters+1):
             msk = ClsLbl==tc
             if not msk.any(): continue # skip metric if no class labels are found
@@ -1184,6 +1185,7 @@ def main():
 
         # if test_bpd < best_test_bpd:
         #     best_test_bpd = test_bpd
+        
         utils.save_checkpoint({
             'state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),

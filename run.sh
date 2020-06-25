@@ -1,8 +1,9 @@
 #!/bin/bash
 
-##SBATCH -N 1
-##SBATCH -t 8:00:00
-##SBATCH -p gpu_titanrtx
+#SBATCH -N 2
+#SBATCH -t 6:00:00
+#SBATCH -p gpu_titanrtx
+np=$(($SLURM_NNODES * 4))
 
 module purge
 module use ~/environment-modules-lisa
@@ -26,7 +27,7 @@ export HOROVOD_WITH_PYTORCH=1
 
 
 #rm -rf experiments/*
-#pip install horovod
+pip install horovod
 #pip install torch
 #pip install torchvision
 #pip install torchsummary
@@ -35,18 +36,21 @@ export HOROVOD_WITH_PYTORCH=1
  
  
  #mpirun -map-by ppr:4:node -np 4 -x LD_LIBRARY_PATH -x PATH -mca pml ob1 -mca btl ^openib python -u train_img.py \
- #mpirun -map-by ppr:4:node -np 4 -x LD_LIBRARY_PATH -x PATH python -u train_img.py \
- python train_img.py \
+ #python train_img.py \
+ cd ~/examode/color-information
+ 
+
+
+ 
+
+ mpirun -map-by ppr:4:node -np $np -x LD_LIBRARY_PATH -x PATH python -u train_img_horo.py \
  --data custom \
- --dataset 17 \
- --train_centers 1 \
- --val_centers 4 \
- --train_path /nfs/managed_datasets/CAMELYON17/training/center_XX \
- --valid_path /nfs/managed_datasets/CAMELYON17/training/center_XX \
- --val_split 0.2 \
+ --fp16_allreduce \
+ --train_path /home/rubenh/examode/deeplab/CAMELYON16_PREPROCESSING/Radboudumc \
+ --valid_path /nfs/managed_datasets/CAMELYON17/training/center_1/patches_positive_256 \
  --imagesize 256 \
- --batchsize 32 \
- --val-batchsize 32 \
+ --batchsize 4 \
+ --val-batchsize 4 \
  --actnorm True \
  --nbits 8 \
  --act swish \
@@ -55,14 +59,65 @@ export HOROVOD_WITH_PYTORCH=1
  --fc-end False \
  --squeeze-first False \
  --factor-out True \
- --save experiments/test \
+ --save experiments/RadCAM16 \
  --nblocks 16 \
- --vis-freq 50 \
- --resume /home/rubenh/examode/color-information/experiments/gmm1/models/most_recent.pth \
- --nepochs 1 
+ --vis-freq 10 \
+ --nepochs 5 \
+ --resume /home/rubenh/examode/color-information/experiments/Radboudumc/models/most_recent_8_workers.pth \
+ --save_conv True
 
 
+"""
+TRAINING
 
+ mpirun -map-by ppr:4:node -np $np -x LD_LIBRARY_PATH -x PATH python -u train_img_horo.py \
+ --data custom \
+ --train_path /home/rubenh/examode/deeplab/CAMELYON16_PREPROCESSING/Radboudumc \
+ --valid_path /home/rubenh/examode/deeplab/CAMELYON16_PREPROCESSING/Radboudumc \
+ --imagesize 256 \
+ --batchsize 4 \
+ --val-batchsize 4 \
+ --actnorm True \
+ --nbits 8 \
+ --act swish \
+ --update-freq 1 \
+ --n-exact-terms 8 \
+ --factor-out True \
+ --save experiments/Radboudumc \
+ --nblocks 21 \
+ --nclusters 3 \
+ --vis-freq 4 \
+ --nepochs 10 \
+ --lr 1e-3 \
+ --idim 128
 
- #--nblocks 16-16-16-16-16-16 \
- #--debug
+"""
+ 
+"""
+
+EVALUATION
+
+  mpirun -map-by ppr:4:node -np $np -x LD_LIBRARY_PATH -x PATH python -u train_img_horo.py \
+ --data custom \
+ --fp16_allreduce \
+ --train_path /home/rubenh/examode/deeplab/CAMELYON16_PREPROCESSING/Radboudumc \
+ --valid_path /home/rubenh/examode/deeplab/CAMELYON16_PREPROCESSING/AOEC \
+ --imagesize 256 \
+ --batchsize 1 \
+ --val-batchsize 1 \
+ --actnorm True \
+ --nbits 8 \
+ --act swish \
+ --update-freq 1 \
+ --n-exact-terms 8 \
+ --fc-end False \
+ --squeeze-first False \
+ --factor-out True \
+ --save experiments/Radboudumc \
+ --nblocks 16 \
+ --vis-freq 10 \
+ --nepochs 5 \
+ --resume /home/rubenh/examode/color-information/experiments/Radboudumc/models/most_recent_4_workers.pth \
+ --save_conv True
+ 
+"""
