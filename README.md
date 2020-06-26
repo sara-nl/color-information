@@ -34,9 +34,9 @@ invertibility.
 > The tissue class membership, followed by conversion
 
 |      Semantic Segmentation Comparison with DCGMM           |
-|-----------------------------------------------------------:|
+|:----------------------------------------------------------:|
 | Model         | Parameters          |   Validation mIoU    |
-| --------------|:-------------------:| --------------------:|
+|:-------------:|:-------------------:| :-------------------:|
 | DCGMM         | 517233              |   0.7928 +- 0.0413   |
 | iResFlow      | 500388              |   0.8477 +- 0.2377   |
 
