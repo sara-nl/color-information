@@ -47,6 +47,8 @@ invertibility.
 
 <p align="center">
 <img  width="250" height="250" src=_images/dcgmm_center_1_467.png> <==> <img  width="250" height="250" src=_images/tumor_center_1_256_467.png>
+
+
 <img  width="250" height="250" src=_images/dcgmm_center_1_468.png> <==> <img  width="250" height="250" src=_images/tumor_center_1_256_468.png>
 </p>  
 # Setup
