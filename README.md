@@ -28,7 +28,11 @@ invertibility.
 
 <p align="center">
 <img  width="250" height="250" src=_images/template.png> ==> <img  width="250" height="250" src=_images/gamma.png>
+
+
 <img  width="250" height="250" src=_images/target.png> ==> <img  width="250" height="250" src=_images/pi.png>
+
+
 <img  width="250" height="250" src=_images/target.png> ==> <img  width="250" height="250" src=_images/norm.png>
 </p>  
 > The tissue class membership, followed by conversion
@@ -51,6 +55,10 @@ invertibility.
 
 <img  width="250" height="250" src=_images/dcgmm_center_1_468.png> <==> <img  width="250" height="250" src=_images/tumor_center_1_256_468.png>
 </p>  
+
+> Left: DCGMM | Right: iResFlow
+
+
 # Setup
 These steps ran on LISA this module environment, where we first clone and enable the 2020 software stack: 
 
