@@ -628,7 +628,11 @@ if (args.resume is not None):
     state = model.state_dict()
     state.update(sd)
     
-    model.load_state_dict(state, strict=True)
+    try:
+        model.load_state_dict(state, strict=True)
+    except ValueError("Model mismatch, check args.nclusters and args.nblocks"):
+        sys.exit(1)
+    
     # ema.set(checkpt['ema'])
     if 'optimizer_state_dict' in checkpt:
         optimizer.load_state_dict(checkpt['optimizer_state_dict'])

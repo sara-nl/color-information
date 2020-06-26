@@ -58,7 +58,7 @@ mpirun -map-by ppr:4:node -np 8 -x LD_LIBRARY_PATH -x PATH python -u train_img_h
  --factor-out True \
  --save experiments/Rad_AOEC \
  --nblocks 21 \
- --nclusters 3 \
+ --nclusters 4 \
  --vis-freq 10 \
  --nepochs 5 \
  --resume /home/rubenh/examode/color-information/checkpoints/Radboudumc_8_workers.pth \
