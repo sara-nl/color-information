@@ -40,26 +40,26 @@ invertibility.
 
 ## Analysis of Normalized Median Intensity (NMI -  scores)
 
-|        | RadboudUMC - TCGA     |  RadboudUMC - AOEC |
+|        | RadboudUMC (template) - TCGA (target)     |  RadboudUMC (template) - AOEC (target) |
 |:------:|:-------------------------:|:-------------------------:|
 | DCGMM  |![](_images/Radboudumc-TCGA-boxplot-eval.png)  |  ![](_images/Radboudumc-AOEC-boxplot-eval.png)|
 |iResFlow|![](_images/worker-0-Rad_TCGA-boxplot-eval.png)  |  ![](_images/worker-0-Rad_AOEC-boxplot-eval.png)|
 
 > Circles are outliers.
 
-### RadboudUMC - TCGA
+### RadboudUMC (template) - TCGA (target)
 | **Model**|**NMI - Standard Deviation**|**NMI - Coefficient of Variation**|
 |:--------:|:------------:|:-----------------:|
 |   DCGMM  |   0.0686 +- 0.0065     |  0.0776 +- 0.0110 |
 | iResFlow |   0.0381 +- 0.0094     |  0.0425 +- 0.0148 |
 
-### RadboudUMC - AOEC
+### RadboudUMC (template) - AOEC (target)
 | **Model**|**NMI - Standard Deviation**|**NMI - Coefficient of Variation**|
 |:--------:|:------------:|:-----------------:|
 |   DCGMM  |   0.0547 +- 0.0222    | 0.0670 +- 0.0249 |
 | iResFlow |   0.0497 +- 0.0126    | 0.0563 +- 0.0170  |
 
-> NMI_SD / NMI_CV metrics based on 5 runs of 100 256 x 256 patches of RadboudUMC, AOEC, TCGA data
+> NMI_SD / NMI_CV metrics based on 5 runs of 100 256 x 256 patches of RadboudUMC (template), AOEC (target), TCGA (target) data
 
 
 ## Semantic Segmentation Comparison with DCGMM              
@@ -69,7 +69,7 @@ invertibility.
 | iResFlow |   500388     |  0.8477 +- 0.0237 |
 
 
-> Comparison done on CAMLEYON17, medical center 1 patches of 256 x 256, 4 independent runs of 50 epochs
+> Comparison done on CAMLEYON17 with RadboudUMC data (template), medical center 1 patches of 256 x 256, 4 independent runs of 50 epochs
 
 
 <p align="center">
