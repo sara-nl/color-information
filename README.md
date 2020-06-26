@@ -227,7 +227,9 @@ optional arguments:
 ```
 ### Training
 ```
- python train_img.py \
+# CAMELYON17
+
+mpirun -map-by ppr:4:node -np $np -x LD_LIBRARY_PATH -x PATH python -u train_img_horo.py \
  --data custom \
  --dataset 17 \             # CAMELYON 17
  --train_centers 1 \
@@ -250,6 +252,30 @@ optional arguments:
  --nblocks 16 \             # 1 residual block of length 16
  --vis-freq 50              # Visualize every 50 iterations
  --nepochs 5
+ 
+# CUSTOM DATA
+
+mpirun -map-by ppr:4:node -np $np -x LD_LIBRARY_PATH -x PATH python -u train_img_horo.py \
+ --data custom \
+ --train_path /home/rubenh/examode/deeplab/CAMELYON16_PREPROCESSING/Radboudumc \
+ --valid_path /home/rubenh/examode/deeplab/CAMELYON16_PREPROCESSING/Radboudumc \
+ --val_split 0.2 \
+ --imagesize 256 \
+ --batchsize 4 \
+ --val-batchsize 4 \
+ --actnorm True \
+ --nbits 8 \
+ --act swish \
+ --update-freq 1 \
+ --n-exact-terms 8 \
+ --fc-end False \
+ --squeeze-first False \
+ --factor-out True \
+ --save experiments/test \
+ --nblocks 16 \
+ --vis-freq 50 \             
+ --nepochs 5
+ 
 ```
 
 - This will train the invertible resnet for 5 epochs, and save visualisations and checkpoints in `experiments/test`.
@@ -284,9 +310,9 @@ optional arguments:
  --resume /home/rubenh/examode/color-information/checkpoints/Radboudumc_8_workers.pth \
  --save_conv False                                                                  # Set to save converted images
 
-# CAMELYON
+# CAMELYON17
 
- python train_img.py \
+mpirun -map-by ppr:4:node -np $np -x LD_LIBRARY_PATH -x PATH python -u train_img_horo.py \
  --data custom \
  --dataset 17 \             # CAMELYON 17
  --train_centers 1 \        # Use medical center 1 as template
