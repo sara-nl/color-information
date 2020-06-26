@@ -34,6 +34,7 @@ invertibility.
 > The tissue class membership, followed by conversion
 
 
+
 ## Semantic Segmentation Comparison with DCGMM              
 | **Model**|**Parameters**|**Validation mIoU**|
 |:--------:|:------------:|:-----------------:|
@@ -43,6 +44,11 @@ invertibility.
 
 > Comparison done on CAMLEYON17, medical center 1 patches of 256 x 256, 4 independent runs of 50 epochs
 
+
+<p align="center">
+<img  width="250" height="250" src=_images/dcgmm_center_1_467.png> <==> <img  width="250" height="250" src=_images/tumor_center_1_256_467.png>
+<img  width="250" height="250" src=_images/dcgmm_center_1_468.png> <==> <img  width="250" height="250" src=_images/tumor_center_1_256_468.png>
+</p>  
 # Setup
 These steps ran on LISA this module environment, where we first clone and enable the 2020 software stack: 
 
