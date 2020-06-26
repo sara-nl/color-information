@@ -40,11 +40,26 @@ invertibility.
 
 ## Analysis of Normalized Median Intensity (NMI -  scores)
 
-| Radboudumc - TCGA     |  Radboudumc - AOEC |
-:-------------------------:|:-------------------------:
-![](outputs/output_Biotouch/18-15_02-02-2018/Identification/ITALIC/ITALIC_movementPoints_cmc.png)  |  ![](outputs/output_Biotouch/18-15_02-02-2018/Identification/BLOCK_LETTERS/BLOCK_LETTERS_movementPoints_cmc.png)
-![](outputs/output_Biotouch/18-15_02-02-2018/Verification/ITALIC/ITALIC_movementPoints_notbalanced_roc.png)  |  ![](outputs/output_Biotouch/18-15_02-02-2018/Verification/BLOCK_LETTERS/BLOCK_LETTERS_movementPoints_notbalanced_roc.png)
-![](outputs/output_Biotouch/18-15_02-02-20
+|        | RadboudUMC - TCGA     |  RadboudUMC - AOEC |
+|:------:|:-------------------------:|:-------------------------:|
+| DCGMM  |![](_images/Radboudumc-TCGA-boxplot-eval.png)  |  ![](_images/Radboudumc-AOEC-boxplot-eval.png)|
+|iResFlow|![](_images/worker-0-Rad_TCGA-boxplot-eval.png)  |  ![](_images/worker-0-Rad_AOEC-boxplot-eval.png)|
+
+> Circles are outliers.
+
+### RadboudUMC - TCGA
+| **Model**|**NMI - Standard Deviation**|**NMI - Coefficient of Variation**|
+|:--------:|:------------:|:-----------------:|
+|   DCGMM  |   0.0686 +- 0.0065     |  0.0776 +- 0.0110 |
+| iResFlow |   0.0381 +- 0.0094     |  0.0425 +- 0.0148 |
+
+### RadboudUMC - AOEC
+| **Model**|**NMI - Standard Deviation**|**NMI - Coefficient of Variation**|
+|:--------:|:------------:|:-----------------:|
+|   DCGMM  |   0.0547 +- 0.0222    | 0.0670 +- 0.0249 |
+| iResFlow |   0.0497 +- 0.0126    | 0.0563 +- 0.0170  |
+
+> NMI_SD / NMI_CV metrics based on 5 runs of 100 256 x 256 patches of RadboudUMC, AOEC, TCGA data
 
 
 ## Semantic Segmentation Comparison with DCGMM              
