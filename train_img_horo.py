@@ -452,7 +452,7 @@ class make_dataset(torch.utils.data.Dataset):
         # im = Image.fromarray(im)
         # im.save('test2.png')
         mask  = mask 
-        sample = (image ,mask)
+        sample = (image ,mask, self.image_list[idx])
         return sample
 
 
@@ -739,7 +739,7 @@ def train(epoch,model,gmm):
 
     
     end = time.time()
-    for idx, (x, y) in enumerate(train_loader):
+    for idx, (x, y, z) in enumerate(train_loader):
         
         # break one iter early to avoid out of sync
         if idx == len(train_loader) - 1: break
@@ -874,7 +874,8 @@ def validate(epoch, model,gmm, ema=None):
     - Evaluates NMI / CV / SD
     """
     
-    if rank00(): print("Starting Validation")
+        
+    if rank00(): utils.makedirs(os.path.join(args.save, 'imgs')), print("Starting Validation")
 
 
     if ema is not None:
@@ -891,7 +892,7 @@ def validate(epoch, model,gmm, ema=None):
 
 
     if rank00(): print(f"Deploying on templates...")
-    for idx, (x, y) in enumerate(train_loader):
+    for idx, (x, y, z_path) in enumerate(train_loader):
         # break one iter early to avoid out of sync
         if idx == len(train_loader) - 2: break
         t1 = time.time()
@@ -939,14 +940,14 @@ def validate(epoch, model,gmm, ema=None):
         
         if args.save_conv:
             # save images for transformation
-            for ct, img in enumerate(x):
+            for ct, (img,path) in enumerate(zip(x,z_path)):
                 im_tmpl = img.cpu().numpy()
-                im_tmpl = np.swapaxes(im_tmpl,0,1)
+                im_tmpl = np.swapaxes(im_tmpl,0,1)  
                 im_tmpl = np.swapaxes(im_tmpl,1,-1)
                 im_tmpl = imgtf.HSD2RGB_Numpy(im_tmpl)
                 im_tmpl = (im_tmpl*255).astype('uint8')
                 im_tmpl = Image.fromarray(im_tmpl)
-                im_tmpl.save(os.path.join(args.save,'imgs',f'worker-{hvd.rank()}-batch-{idx}-im_tmpl-{ct}-eval.png'))
+                im_tmpl.save(os.path.join(args.save,'imgs',f'im_tmpl-{path.split("/")[-1]}-eval.png'))
                 im_tmpl.close()
             
     if rank00(): print("Allreduce mu_tmpl / std_tmpl ...")
@@ -979,7 +980,7 @@ def validate(epoch, model,gmm, ema=None):
         metrics[f'cv_{tc}']=[]
     
     if rank00(): print(f"Predicting on templates...")
-    for idx, (x_test, y_test) in enumerate(test_loader):
+    for idx, (x_test, y_test, z_test) in enumerate(test_loader):
         # break one iter early to avoid out of sync
         if idx == len(test_loader) - 2: break
         t1 = time.time()
@@ -1028,32 +1029,38 @@ def validate(epoch, model,gmm, ema=None):
         ClsLbl = ClsLbl.astype('int32')
         mean_rgb = np.mean(X_conv,axis=-1)
         for tc in range(1,args.nclusters+1):
-            msk = ClsLbl==tc
-            if not msk.any(): continue # skip metric if no class labels are found
-            ma = mean_rgb[msk]
-            mean = np.mean(ma)
-            median = np.median(ma)
-            perc = np.percentile(ma, 95)
+            msk = torch.where(torch.tensor(ClsLbl) == tc , torch.tensor(1),torch.tensor(0))
+            msk = [(i,msk.cpu().numpy()) for i, msk in enumerate(msk) if torch.max(msk).cpu().numpy()] # skip metric if no class labels are found
+            if not len(list(msk)): continue
+            # Take indices from valid msks and get mean_rgb at valid indices, then multiply with msk
+            idces = [x[0] for x in msk]
+            msk   = np.array([x[1] for x in msk])
+            ma = mean_rgb[idces,...] * msk
+            mean    = np.array([np.mean(ma[ma!=0]) for ma in ma])
+            median  = np.array([np.median(ma[ma!=0]) for ma in ma])
+            perc    = np.array([np.percentile(ma[ma!=0],95) for ma in ma])
             nmi = median / perc
-            metrics[f'mean_{tc}'].append(mean)
-            metrics[f'median_{tc}'].append(median)
-            metrics[f'perc_95_{tc}'].append(perc)
-            metrics[f'nmi_{tc}'].append(nmi)
-                    
+            
+            metrics['mean_'     +str(tc)].extend(list(mean))
+            metrics['median_'   +str(tc)].extend(list(median))
+            metrics['perc_95_'  +str(tc)].extend(list(perc))
+            metrics['nmi_'      +str(tc)].extend(list(nmi))
+            
+        
         if args.save_conv:
-            for ct, img in enumerate(x_test):
+            for ct, (img, path) in enumerate(zip(x_test,z_test)):
                 im_test = img.cpu().numpy()
                 im_test = np.swapaxes(im_test,0,1)
                 im_test = np.swapaxes(im_test,1,-1)
                 im_test = imgtf.HSD2RGB_Numpy(im_test)
                 im_test = (im_test*255).astype('uint8')
                 im_test = Image.fromarray(im_test)
-                im_test.save(os.path.join(args.save,'imgs',f'worker-{hvd.rank()}-batch-{idx}-im_test-{ct}-eval.png'))
+                im_test.save(os.path.join(args.save,'imgs',f'im_test-{path.split("/")[-1]}-eval.png'))
                 im_test.close()
-            for ct, img in enumerate(X_conv):
-                im_conv = img.reshape(args.imagesize,args.imagesize,3)
+            # for ct, img in enumerate(X_conv):
+                im_conv = X_conv[ct].reshape(args.imagesize,args.imagesize,3)
                 im_conv = Image.fromarray(im_conv)
-                im_conv.save(os.path.join(args.save,'imgs',f'worker-{hvd.rank()}-batch-{idx}-im_conv-{ct}-eval.png'))
+                im_conv.save(os.path.join(args.save,'imgs',f'im_conv-{path.split("/")[-1]}-eval.png'))
                 im_conv.close()
             
             # savegamma(pi,f"{idx}-eval",pred=1)
@@ -1061,32 +1068,46 @@ def validate(epoch, model,gmm, ema=None):
         
         if idx % 10 == 0 and rank00(): print(f"Batch {idx} at { hvd.size()*args.batchsize / (time.time() - t1) } imgs / sec")
     
+    # average sd of nmi across tissue classes
     av_sd = []
+    # average cv of nmi across tissue classes
     av_cv = []
+    # total nmi across tissue classes
+    tot_nmi = np.empty((0,0))
+    
+    
     for tc in range(1,args.nclusters+1):
-        if len(metrics[f'mean_{tc}']) == 0: continue
-        metrics[f'sd_{tc}'] = np.array(metrics[f'nmi_{tc}']).std()
-        metrics[f'cv_{tc}'] = np.array(metrics[f'nmi_{tc}']).std() / np.array(metrics[f'nmi_{tc}']).mean()
-        print(f'sd_{tc}:', metrics[f'sd_{tc}'])
-        print(f'cv_{tc}:', metrics[f'cv_{tc}'])
-        av_sd.append(metrics[f'sd_{tc}'])
-        av_cv.append(metrics[f'cv_{tc}'])
+        if len(metrics['mean_' + str(tc)]) == 0: continue
+        nmi = hvd.allgather(torch.tensor(np.array(metrics['nmi_' + str(tc)])[...,None]))
+        metrics[f'sd_' + str(tc)] = torch.std(nmi).cpu().numpy()
+        metrics[f'cv_' + str(tc)] = torch.std(nmi).cpu().numpy() / torch.mean(nmi).cpu().numpy()
+        if rank00():
+            print(f'sd_' + str(tc)+':', metrics[f'sd_{tc}'])
+            print(f'cv_' + str(tc)+':', metrics[f'cv_{tc}'])
+        av_sd.append(metrics[f'sd_' + str(tc)])
+        av_cv.append(metrics[f'cv_' + str(tc)])
+        tot_nmi = np.append(tot_nmi,nmi)
     
-    # fig1, ax1 = plt.subplots()
-    # ax1.set_title('Box Plot Eval')
-    # ax1.boxplot(np.array(metrics[f'nmi_{tc}']))
-    
-    
-    print(f"Average sd = {np.array(av_sd).mean()}")
-    print(f"Average cv = {np.array(av_cv).mean()}")
-    import csv
-    file = open(f"worker-{hvd.rank()}-metrics-eval.csv","w")
-    writer = csv.writer(file)
-    for key, value in metrics.items():
-        writer.writerow([key, value])
+    import matplotlib as mpl
+    mpl.use('Agg')
+    import matplotlib.pyplot as plt
+    fig1, ax1 = plt.subplots()
+    ax1.set_title(f'Box Plot Eval {args.save.split("/")[-1]}')
+    ax1.boxplot(tot_nmi)
     
     
-    file.close()
+    if rank00():
+        plt.savefig(f'worker-{hvd.rank()}-{args.save.split("/")[-1]}-boxplot-eval.png')
+        print(f"Average sd = {np.array(av_sd).mean()}")
+        print(f"Average cv = {np.array(av_cv).mean()}")
+        import csv
+        file = open(f'worker-{hvd.rank()}-{args.save.split("/")[-1]}-metrics-eval.csv',"w")
+        writer = csv.writer(file)
+        for key, value in metrics.items():
+            writer.writerow([key, value])
+        
+        
+        file.close()
     
 
     # correct = 0
@@ -1114,12 +1135,11 @@ def validate(epoch, model,gmm, ema=None):
 
 
 def visualize(epoch, model, gmm, itr, real_imgs, global_itr):
-    print("Starting Visualisation")
     model.eval()
     gmm.eval()
-    utils.makedirs(os.path.join(args.save, 'imgs'))
+    if rank00(): utils.makedirs(os.path.join(args.save, 'imgs')), print("Starting Visualisation")
 
-    for x_test, y_test in test_loader:
+    for x_test, y_test, z_test in test_loader:
         # x_test = x_test[0,...].unsqueeze(0)
         # y_test = y_test[0,...].unsqueeze(0)
         x_test = x_test.to(device)

@@ -44,7 +44,7 @@ mpirun -map-by ppr:4:node -np 8 -x LD_LIBRARY_PATH -x PATH python -u train_img_h
  --data custom \
  --fp16_allreduce \
  --train_path /home/rubenh/examode/deeplab/CAMELYON16_PREPROCESSING/Radboudumc \
- --valid_path /nfs/managed_datasets/CAMELYON17/training/center_1/patches_positive_256 \
+ --valid_path /nfs/managed_datasets/CAMELYON17/training/center_1/patches_positive_256  \
  --imagesize 256 \
  --batchsize 4 \
  --val-batchsize 4 \
@@ -56,7 +56,7 @@ mpirun -map-by ppr:4:node -np 8 -x LD_LIBRARY_PATH -x PATH python -u train_img_h
  --fc-end False \
  --squeeze-first False \
  --factor-out True \
- --save experiments/Radboudumc \
+ --save experiments/RadCAM17_1 \
  --nblocks 21 \
  --nclusters 3 \
  --vis-freq 10 \
