@@ -28,10 +28,23 @@ invertibility.
 
 <p align="center">
 <img  width="250" height="250" src=_images/template.png> ==> <img  width="250" height="250" src=_images/gamma.png>
+
+
 <img  width="250" height="250" src=_images/target.png> ==> <img  width="250" height="250" src=_images/pi.png>
+
+
 <img  width="250" height="250" src=_images/target.png> ==> <img  width="250" height="250" src=_images/norm.png>
 </p>  
 > The tissue class membership, followed by conversion
+
+
+## Analysis of Normalized Median Intensity (NMI -  scores)
+
+| Radboudumc - TCGA     |  Radboudumc - AOEC |
+:-------------------------:|:-------------------------:
+![](outputs/output_Biotouch/18-15_02-02-2018/Identification/ITALIC/ITALIC_movementPoints_cmc.png)  |  ![](outputs/output_Biotouch/18-15_02-02-2018/Identification/BLOCK_LETTERS/BLOCK_LETTERS_movementPoints_cmc.png)
+![](outputs/output_Biotouch/18-15_02-02-2018/Verification/ITALIC/ITALIC_movementPoints_notbalanced_roc.png)  |  ![](outputs/output_Biotouch/18-15_02-02-2018/Verification/BLOCK_LETTERS/BLOCK_LETTERS_movementPoints_notbalanced_roc.png)
+![](outputs/output_Biotouch/18-15_02-02-20
 
 
 ## Semantic Segmentation Comparison with DCGMM              
@@ -42,6 +55,17 @@ invertibility.
 
 
 > Comparison done on CAMLEYON17, medical center 1 patches of 256 x 256, 4 independent runs of 50 epochs
+
+
+<p align="center">
+<img  width="250" height="250" src=_images/dcgmm_center_1_467.png> <==> <img  width="250" height="250" src=_images/tumor_center_1_256_467.png>
+
+
+<img  width="250" height="250" src=_images/dcgmm_center_1_468.png> <==> <img  width="250" height="250" src=_images/tumor_center_1_256_468.png>
+</p>  
+
+> Left: DCGMM | Right: iResFlow
+
 
 # Setup
 These steps ran on LISA this module environment, where we first clone and enable the 2020 software stack: 
