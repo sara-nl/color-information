@@ -40,10 +40,10 @@ invertibility.
 
 ## Analysis of Normalized Median Intensity (NMI -  scores)
 
-| Radboudumc - TCGA     |  Radboudumc - AOEC |
-|:-------------------------:|:-------------------------:
-DCGMM |![](_images/Radboudumc-TCGA-boxplot-eval.png)  |  ![](_images/Radboudumc-AOEC-boxplot-eval.png)
-iResFlow |![](_images/worker-0-Rad_TCGA-boxplot-eval.png)  |  ![](_images/ worker-0-Rad_AOEC-boxplot-eval.png)
+|        | Radboudumc - TCGA     |  Radboudumc - AOEC |
+|:------:|:-------------------------:|:-------------------------:|
+| DCGMM  |![](_images/Radboudumc-TCGA-boxplot-eval.png)  |  ![](_images/Radboudumc-AOEC-boxplot-eval.png)|
+|iResFlow|![](_images/worker-0-Rad_TCGA-boxplot-eval.png)  |  ![](_images/ worker-0-Rad_AOEC-boxplot-eval.png)|
 
 ## Semantic Segmentation Comparison with DCGMM              
 | **Model**|**Parameters**|**Validation mIoU**|
