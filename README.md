@@ -40,11 +40,12 @@ invertibility.
 
 ## Analysis of Normalized Median Intensity (NMI -  scores)
 
-|        | Radboudumc - TCGA     |  Radboudumc - AOEC |
+|        | RadboudUMC - TCGA     |  RadboudUMC - AOEC |
 |:------:|:-------------------------:|:-------------------------:|
 | DCGMM  |![](_images/Radboudumc-TCGA-boxplot-eval.png)  |  ![](_images/Radboudumc-AOEC-boxplot-eval.png)|
 |iResFlow|![](_images/worker-0-Rad_TCGA-boxplot-eval.png)  |  ![](_images/worker-0-Rad_AOEC-boxplot-eval.png)|
 
+> Circles are outliers.
 
 ### RadboudUMC - TCGA
 | **Model**|**NMI - Standard Deviation**|**NMI - Coefficient of Variation**|
