@@ -32,19 +32,39 @@ pip install horovod
 #pip install tqdm
 #pip install scikit-image
  
- 
+
 
 cd ~/examode/color-information
  
 
-
 #/nfs/managed_datasets/CAMELYON17/training/center_1/patches_positive_256 
+mpirun -map-by ppr:4:node -np 8 -x LD_LIBRARY_PATH -x PATH python -u train_img_horo.py \
+ --data custom \
+ --train_path /home/rubenh/examode/deeplab/CAMELYON16_PREPROCESSING/Radboudumc \
+ --valid_path /home/rubenh/examode/deeplab/CAMELYON16_PREPROCESSING/Radboudumc \
+ --val_split 0.2 \
+ --imagesize 256 \
+ --batchsize 4 \
+ --val-batchsize 4 \
+ --actnorm True \
+ --nbits 8 \
+ --act swish \
+ --update-freq 1 \
+ --n-exact-terms 8 \
+ --fc-end False \
+ --squeeze-first False \
+ --factor-out True \
+ --save experiments/test \
+ --nblocks 16 \
+ --vis-freq 50              
+ --nepochs 5
+
 
 mpirun -map-by ppr:4:node -np 8 -x LD_LIBRARY_PATH -x PATH python -u train_img_horo.py \
  --data custom \
  --fp16_allreduce \
  --train_path /home/rubenh/examode/deeplab/CAMELYON16_PREPROCESSING/Radboudumc \
- --valid_path /home/rubenh/examode/deeplab/CAMELYON16_PREPROCESSING/AOEC  \
+ --valid_path /home/rubenh/examode/deeplab/CAMELYON16_PREPROCESSING/Radboudumc  \
  --imagesize 256 \
  --batchsize 4 \
  --val-batchsize 4 \
