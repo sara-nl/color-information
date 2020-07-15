@@ -5,19 +5,20 @@ import os
 import os.path
 import numpy as np
 from tqdm import tqdm
-import matplotlib.pyplot as plt
 import gc
 import sys
 import pdb
 from glob import glob
 from sklearn.utils import shuffle
-from skimage import io
 from joblib import Parallel, delayed
 import multiprocessing
-from PIL import Image
+from PIL import Image,ImageStat
+from openslide import OpenSlide, ImageSlide, OpenSlideUnsupportedFormatError
+import pyvips
 import random
 import torch.utils.data.distributed
 import horovod.torch as hvd
+import cv2
 import torch.multiprocessing as mp
 import pprint
 import torch
@@ -38,11 +39,13 @@ import lib.layers.base as base_layers
 from lib.lr_scheduler import CosineAnnealingWarmRestarts
 
 
-"""
-TODO:
-
 
 """
+- Implement in training
+- Deploy
+
+"""
+
 # Arguments
 parser = argparse.ArgumentParser(description='Residual Flow Model Color Information', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument(
@@ -55,13 +58,21 @@ parser.add_argument('--dataroot', type=str, default='data')
 ## GMM ##
 parser.add_argument('--nclusters', type=int, default=4,help='The amount of tissue classes trained upon')
 
-## CAMELYON ##
 parser.add_argument('--dataset', type=str, default="0", help='Which dataset to use. "16" for CAMELYON16 or "17" for CAMELYON17')
-parser.add_argument('--train_centers', nargs='+', default=[-1], type=int, help='Centers for training. Use -1 for all, otherwise 2 3 4 eg.')
-parser.add_argument('--val_centers', nargs='+', default=[-1], type=int,help='Centers for validation. Use -1 for all, otherwise 2 3 4 eg.')
-parser.add_argument('--train_path', type=str, help='Folder of where the training data is located', default=None)
-parser.add_argument('--valid_path', type=str, help='Folder where the validation data is located', default=None)
-parser.add_argument('--val_split', type=float, default=0)
+parser.add_argument('--slide_path', type=str, help='Folder of where the training data whole slide images are located', default=None)
+parser.add_argument('--mask_path', type=str, help='Folder of where the training data whole slide images masks are located', default=None)
+parser.add_argument('--valid_slide_path', type=str, help='Folder of where the validation data whole slide images are located', default=None)
+parser.add_argument('--valid_mask_path', type=str, help='Folder of where the validation data whole slide images masks are located', default=None)
+parser.add_argument('--slide_format', type=str, help='In which format the whole slide images are saved.', default='tif')
+parser.add_argument('--mask_format', type=str, help='In which format the masks are saved.', default='tif')
+parser.add_argument('--bb_downsample', type=int, help='Level to use for the bounding box construction as downsampling level of whole slide image', default=7)
+parser.add_argument('--log_image_path', type=str, help='Path of savepath of downsampled image with processed rectangles on it.', default='.')
+parser.add_argument('--epoch_steps', type=int, help='The hard - coded amount of iterations in one epoch.', default=1000)
+
+# Not used now
+#parser.add_argument('--batch_tumor_ratio', type=float, help='The ratio of the batch that contains tumor', default=1)
+    
+parser.add_argument('--val_split', type=float, default=0.15)
 parser.add_argument('--debug', action='store_true', help='If running in debug mode')
 parser.add_argument('--fp16_allreduce', action='store_true', help='If all reduce in fp16')
 ##
@@ -109,13 +120,13 @@ parser.add_argument('--optimizer', type=str, choices=['adam', 'adamax', 'rmsprop
 parser.add_argument('--scheduler', type=eval, choices=[True, False], default=False)
 parser.add_argument('--nepochs', help='Number of epochs for training', type=int, default=1000)
 parser.add_argument('--batchsize', help='Minibatch size', type=int, default=64)
+parser.add_argument('--val-batchsize', help='minibatch size', type=int, default=200)
 parser.add_argument('--lr', help='Learning rate', type=float, default=1e-3)
 parser.add_argument('--wd', help='Weight decay', type=float, default=0)
 # 0
 parser.add_argument('--warmup-iters', type=int, default=0)
 parser.add_argument('--annealing-iters', type=int, default=0)
 parser.add_argument('--save', help='directory to save results', type=str, default='experiment1')
-parser.add_argument('--val-batchsize', help='minibatch size', type=int, default=200)
 parser.add_argument('--seed', type=int, default=None)
 parser.add_argument('--ema-val', type=eval, help='Use exponential moving averages of parameters at validation.', choices=[True, False], default=False)
 parser.add_argument('--update-freq', type=int, default=1)
@@ -140,6 +151,12 @@ args = parser.parse_args()
 if args.seed is None:
     args.seed = np.random.randint(100000)
 
+
+
+# Assert for now
+assert args.batchsize == args.val_batchsize, "Training and Validation batch size must match"
+
+    
 # Horovod: initialize library.
 hvd.init()
 print(f"hvd.size {hvd.size()} hvd.rank {hvd.rank()} hvd.local_rank {hvd.local_rank()}")
@@ -155,7 +172,6 @@ logger = utils.get_logger(logpath=os.path.join(args.save, 'logs'), filepath=os.p
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-
 
 if rank00():
     logger.info(args)
@@ -180,9 +196,9 @@ if device.type == 'cuda':
 
 
 # Horovod: limit # of CPU threads to be used per worker.
-torch.set_num_threads(3)
+torch.set_num_threads(1)
 
-kwargs = {'num_workers': 3, 'pin_memory': True} if device.type == 'cuda' else {}
+kwargs = {'num_workers': 1, 'pin_memory': True} if device.type == 'cuda' else {}
 
 
      
@@ -278,21 +294,6 @@ def remove_padding(x):
     else:
         return x
     
-    
-def get_image_lists(args):
-    """ Get the image lists"""
-
-    if args.dataset == "17":
-        image_list, mask_list, val_image_list, val_mask_list, sample_weight_list = load_camelyon17(args)
-    else:
-        image_list, mask_list, val_image_list, val_mask_list, sample_weight_list = load_data(args)
-
-    if rank00():
-        print('Found', len(image_list), 'training images')
-        print('Found', len(mask_list), 'training masks')
-        print('Found', len(val_image_list), 'validation images')
-        print('Found', len(val_mask_list), 'validation masks')
-    return image_list, mask_list, val_image_list, val_mask_list, sample_weight_list
 
 
 def open_img(path):
@@ -305,101 +306,6 @@ def get_valid_idx(mask_list):
     data = Parallel(n_jobs=num_cores)(delayed(open_img)(i) for i in mask_list)
     return data
 
-def load_data(args):
-    """  Load the camelyon16 dataset """
-    image_list = [x for x in sorted(glob(os.path.join(str(args.train_path),'*'), recursive=True)) if 'mask' not in x]
-    mask_list = [x for x in sorted(glob(os.path.join(str(args.train_path),'*'), recursive=True)) if 'mask' in x]
-    if not len(mask_list):
-        mask_list = len(image_list)*[image_list[0]]
-    
-    sample_weight_list = [1.0] * len(image_list)
-    
-    if args.val_split:
-        val_split = int(len(image_list) * (1-args.val_split))
-        val_image_list = image_list[val_split:]
-        val_mask_list = mask_list[val_split:]
-        sample_weight_list = sample_weight_list[:val_split]
-        image_list = image_list[:val_split]
-        mask_list = mask_list[:val_split]
-        
-        # Only if mask_list is actually defined 
-        if not mask_list[0]:
-            # idx = [np.asarray(Image.open(x))[:, :, 0] / 255 for x in val_mask_list]
-            idx = get_valid_idx(val_mask_list)
-            num_pixels = args.imagesize ** 2
-            valid_idx = [((num_pixels - np.count_nonzero(x)) / num_pixels) >= 0.2 for x in idx]
-            valid_idx = [i for i, x in enumerate(valid_idx) if x]
-        
-            val_image_list = [val_image_list[i] for i in valid_idx]
-            val_mask_list = [val_mask_list[i] for i in valid_idx]
-    else:
-        val_image_list = [x for x in sorted(glob(os.path.join(str(args.valid_path),'*'), recursive=True)) if 'mask' not in x]
-        val_mask_list = [x for x in sorted(glob(os.path.join(str(args.valid_path),'*'), recursive=True)) if 'mask' in x]
-        if not len(val_mask_list):
-            val_mask_list = len(val_image_list)*[val_image_list[0]]
-    
-    val_image_list, val_mask_list = shuffle(val_image_list, val_mask_list)
-
-    if args.debug:
-        image_list, mask_list = shuffle(image_list[:5], mask_list[:5])
-        val_image_list, val_mask_list = shuffle(val_image_list[:5], val_mask_list[:5])
-    else:
-        image_list, mask_list = shuffle(image_list, mask_list)
-        val_image_list, val_mask_list = shuffle(val_image_list, val_mask_list)
-        
-    return image_list, mask_list, val_image_list, val_mask_list, sample_weight_list
-
-
-
-def load_camelyon17(args):
-    """ Load the camelyon17 dataset """
-    
-    # leave 0.25 unless debugging per image
-    batch_p_gpu = 0.25
-    image_list = int(batch_p_gpu*4)*[x for c in args.train_centers for x in sorted(glob(str(args.train_path).replace('center_XX', f'center_{c}') + f'/patches_positive_{args.imagesize}/tumor_center_1_256_864.png', recursive=True)) if 'mask' not in x]
-    
-    mask_list  = int(batch_p_gpu*4)*[x for c in args.train_centers for x in sorted(glob(str(args.train_path).replace('center_XX', f'center_{c}') + f'/patches_positive_{args.imagesize}/mask_tumor_center_1_256_864.png', recursive=True)) if'mask' in x]
-    if args.debug:
-        image_list, mask_list = shuffle(image_list[:5], mask_list[:5])
-    else:
-        image_list, mask_list = image_list, mask_list
-        # image_list, mask_list = shuffle(image_list, mask_list)
-    
-    sample_weight_list = [1.0] * len(image_list)
-
-    # If validating on everything, 00 custom
-    if args.val_centers == [1, 2, 3, 4]:
-        val_split = int(len(image_list) * (1-args.val_split))
-        val_image_list = image_list[val_split:]
-        val_mask_list = mask_list[val_split:]
-        sample_weight_list = sample_weight_list[:val_split]
-        image_list = image_list[:val_split]
-        mask_list = mask_list[:val_split]
-
-        idx = [np.asarray(Image.open(x))[:, :, 0] / 255 for x in val_mask_list]
-        num_pixels = args.imagesize ** 2
-        valid_idx = [((num_pixels - np.count_nonzero(x)) / num_pixels) >= 0.2 for x in idx]
-        valid_idx = [i for i, x in enumerate(valid_idx) if x]
-
-        val_image_list = [val_image_list[i] for i in valid_idx]
-        val_mask_list = [val_mask_list[i] for i in valid_idx]
-
-        val_image_list, val_mask_list = shuffle(val_image_list, val_mask_list)
-
-    else:
-        val_image_list = int(batch_p_gpu*4)*[x for c in args.val_centers for x in
-                          sorted(glob(args.valid_path.replace('center_XX', f'center_{c}') + f'/patches_positive_{args.imagesize}/tumor_center_4_256_999.png', recursive=True)) if
-                          'mask' not in x]
-        val_mask_list  = int(batch_p_gpu*4)*[x for c in args.val_centers for x in
-                         sorted(glob(args.valid_path.replace('center_XX', f'center_{c}') + f'/patches_positive_{args.imagesize}/mask_tumor_center_4_256_999.png', recursive=True)) if
-                         'mask' in x]
-        if rank00():
-            print(image_list)
-            print(val_image_list)
-
-    return image_list, mask_list, val_image_list, val_mask_list, sample_weight_list
-
-
 if rank00():
     logger.info('Loading dataset {}'.format(args.data))
 
@@ -407,42 +313,273 @@ if rank00():
 
 class make_dataset(torch.utils.data.Dataset):
     """Make Pytorch dataset."""
-    def __init__(self, image_list, mask_list,train=True):
+    def __init__(self, args,train=True):
         """
         Args:
-            image_list 
-            mask_list 
+
         """
-        self.image_list = image_list
-        self.mask_list  = mask_list
+
         self.train = train
+        
+        if args.mask_path:
+            self.train_paths = shuffle(list(zip(sorted(glob(os.path.join(args.slide_path,f'*.{args.slide_format}'))),
+                                                sorted(glob(os.path.join(args.mask_path,f'*.{args.mask_format}'))))))
+        else:
+            self.train_paths = shuffle(sorted(glob(os.path.join(args.slide_path,f'*.{args.slide_format}'))))
+        
+        print(f"Found {len(self.train_paths)} images")
+        if args.valid_slide_path:
+            if self.args.mask_path:
+                self.valid_paths = shuffle(list(zip(sorted(glob(os.path.join(args.valid_slide_path,f'*.{args.slide_format}'))),
+                                                    sorted(glob(os.path.join(args.valid_mask_path,f'*.{args.mask_format}'))))))
+            else:
+                self.valid_paths = shuffle(sorted(glob(os.path.join(args.valid_slide_path,f'*.{args.slide_format}'))))
+        else:
+            val_split = int(len(self.train_paths) * args.val_split)
+            self.valid_paths = self.train_paths[val_split:]
+            self.train_paths = self.train_paths[:val_split]
+        
+        
+        self.contours_train = []
+        self.contours_valid = []
+        self.contours_tumor = []
+        self.level_used = args.bb_downsample
+        self.mag_factor = pow(2, self.level_used)
+        self.patch_size = args.imagesize
+        # self.tumor_ratio = args.batch_tumor_ratio
+        self.log_image_path = args.log_image_path
+        self.slide_format = args.slide_format
+        
+        
+    @staticmethod
+    def _transform(image,train=True):
         if train:
-            self.transform  = transforms.Compose([
+            return transforms.Compose([
                                 # transforms.ToPILImage(),
                                 # transforms.RandomHorizontalFlip(),
                                 transforms.ToTensor(),
                                 reduce_bits,
                                 lambda x: add_noise(x, nvals=2**args.nbits),
-                            ])
+                            ])(image)
         else:
-            self.transform  = transforms.Compose([
+            return transforms.Compose([
                                 transforms.ToTensor(),
                                 reduce_bits,
                                 lambda x: add_noise(x, nvals=2**args.nbits),
-                            ])
+                            ])(image)
+        
         
     def __len__(self):
-        return len(self.image_list)
+        return len(self.train_paths)
 
-    def __getitem__(self, idx):
-        image = io.imread(self.image_list[idx],as_gray=False, pilmode="RGB")
-        mask  = io.imread(self.mask_list[idx],as_gray=True)
+    def get_bb(self):
+        hsv = cv2.cvtColor(self.rgb_image, cv2.COLOR_BGR2HSV)
+        lower_red = np.array([20, 20, 20])
+        upper_red = np.array([255, 255, 255])
+        mask = cv2.inRange(hsv, lower_red, upper_red)
+
+        # (50, 50)
+        close_kernel = np.ones((50, 50), dtype=np.uint8)
+        image_close = Image.fromarray(cv2.morphologyEx(np.array(mask), cv2.MORPH_CLOSE, close_kernel))
+        # (30, 30)
+        open_kernel = np.ones((30, 30), dtype=np.uint8)
+        image_open = Image.fromarray(cv2.morphologyEx(np.array(image_close), cv2.MORPH_OPEN, open_kernel))
+        contours, _ = cv2.findContours(np.array(image_open), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        _offset=0
+        for i, contour in enumerate(contours):
+            # sometimes the bounding boxes annotate a very small area not in the ROI
+            if contour.shape[0] < 10:
+                print(f"Deleted too small contour from {self.cur_wsi_path}")
+                del contours[i]
+                _offset+=1
+                i=i-_offset
+        # contours_rgb_image_array = np.array(self.rgb_image)
+        # line_color = (255, 150, 150)  
+        # cv2.drawContours(contours_rgb_image_array, contours, -1, line_color, 1)
+        # Image.fromarray(contours_rgb_image_array[...,:3]).save('test.png')
+
+        # self.rgb_image_pil.close()
+        # self.wsi.close()
+        # self.mask.close()
+        
+        return contours
+    
+    def __getitem__(self, train=True):
+        if train:
+            while not self.contours_train or not self.contours_tumor:
+    
+                self.cur_wsi_path = random.choice(self.train_paths)
+                print(f"Opening {self.cur_wsi_path}...")
+                
+                if args.mask_path:
+                    self.wsi  = OpenSlide(self.cur_wsi_path[0])
+                    self.mask = OpenSlide(self.cur_wsi_path[1])
+                else:
+                    self.cur_wsi_path = [self.cur_wsi_path]
+                    self.wsi  = OpenSlide(self.cur_wsi_path[0])
+
+                
+                self.rgb_image_pil = self.wsi.read_region((0, 0), self.level_used, self.wsi.level_dimensions[self.level_used])
+                self.rgb_image = np.array(self.rgb_image_pil)
+    
+                if args.mask_path:
+                    self.mask_pil = self.mask.read_region((0, 0), self.level_used, self.wsi.level_dimensions[self.level_used])
+                    self.mask_image = np.array(self.mask_pil)
+                    
+                self.contours_train = self.get_bb()
+                self.contours = self.contours_train
+                
+                if args.mask_path:
+                    # Get bounding boxes of tumor
+                    contours, _ = cv2.findContours(self.mask_image[...,0], cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    self.contours_tumor = contours
+                else:
+                    self.contours_tumor=1   
+                    
+        else:  
+            while not self.contours_valid or not self.contours_tumor:
+    
+                self.cur_wsi_path = random.choice(self.valid_paths)
+                print(f"Opening {self.cur_wsi_path}...")
+                
+                if args.mask_path:
+                    self.wsi  = OpenSlide(self.cur_wsi_path[0])
+                    self.mask = OpenSlide(self.cur_wsi_path[1])
+                else:
+                    self.cur_wsi_path = [self.cur_wsi_path]
+                    self.wsi  = OpenSlide(self.cur_wsi_path[0])
+                
+                self.rgb_image_pil = self.wsi.read_region((0, 0), self.level_used, self.wsi.level_dimensions[self.level_used])
+                self.rgb_image = np.array(self.rgb_image_pil)
+    
+                if args.mask_path:
+                    self.mask_pil = self.mask.read_region((0, 0), self.level_used, self.wsi.level_dimensions[self.level_used])
+                    self.mask_image = np.array(self.mask_pil)
+                    
+                self.contours_valid = self.get_bb()
+                self.contours = self.contours_valid
+                
+                if args.mask_path:
+                # Get bounding boxes of tumor
+                    contours, _ = cv2.findContours(self.mask_image[...,0], cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    self.contours_tumor = contours
+                else:
+                    self.contours_tumor=1       
+            
+        
+        image = pyvips.Image.new_from_file(self.cur_wsi_path[0])
+        img_reg = pyvips.Region.new(image)
+        if args.mask_path:
+            mask_image  = pyvips.Image.new_from_file(self.cur_wsi_path[1])
+            mask_reg = pyvips.Region.new(mask_image)
+        
+        numpy_batch_patch = []
+        numpy_batch_mask  = []
+        if os.path.isfile(os.path.join(self.log_image_path,self.cur_wsi_path[0].split('/')[-1].replace(self.slide_format,'png'))):
+            try:
+                save_image = np.array(Image.open(os.path.join(self.log_image_path,self.cur_wsi_path[0].split('/')[-1].replace(self.slide_format,'png'))))
+            except:
+                sleeptime=3
+                print(f"waiting for save...")
+                time.sleep(sleeptime)
+                save_image = np.array(Image.open(os.path.join(self.log_image_path,self.cur_wsi_path[0].split('/')[-1].replace(self.slide_format,'png'))))
+                pass
+                
+        else:
+            if args.mask_path:
+                # copy image and mark tumor in black
+                save_image = self.rgb_image.copy() * np.repeat((self.mask_image + 1)[...,0][...,np.newaxis],4,axis=-1)
+            else:
+                save_image = self.rgb_image.copy()
+        
+        # for i in range(int(self.batch_size * (1 - self.tumor_ratio))):
+        bc = random.choice(self.contours)
+        msk = np.zeros(self.rgb_image.shape,np.uint8)
+        cv2.drawContours(msk,[bc],-1,(255),-1)
+        pixelpoints = np.transpose(np.nonzero(msk))
+        
+        b_x_start = bc[...,0].min() * self.mag_factor
+        b_y_start = bc[...,1].min() * self.mag_factor
+        b_x_end = bc[...,0].max() * self.mag_factor
+        b_y_end = bc[...,1].max() * self.mag_factor
+        h = b_y_end - b_y_start
+        w = b_x_end - b_x_start
+    
+        patch = []
+        
+        while not len(patch):
+            x_topleft = random.choice(pixelpoints)[1]* self.mag_factor
+            y_topleft = random.choice(pixelpoints)[0]* self.mag_factor
+            t1 = time.time()
+            # if trying to fetch outside of image, retry
+            try:
+                patch = img_reg.fetch(x_topleft, y_topleft, self.patch_size, self.patch_size)
+                patch = np.ndarray((self.patch_size,self.patch_size,image.get('bands')),buffer=patch, dtype=np.uint8)[...,:3]
+                _std = ImageStat.Stat(Image.fromarray(patch)).stddev
+                # discard based on stddev
+                if (sum(_std[:3]) / len(_std[:3])) < 15:
+                    print("Discard based on stddev")
+                    patch = []
+            except:
+                patch = []
+
+        # im = self.wsi.read_region((x_topleft, y_topleft),0,(self.patch_size, self.patch_size))
+        numpy_batch_patch.append(patch)
+
+        if args.mask_path:
+            mask  = mask_reg.fetch(x_topleft, y_topleft, self.patch_size, self.patch_size)
+            numpy_batch_mask.append(np.ndarray((self.patch_size,self.patch_size,mask_image.get('bands')),buffer=mask, dtype=np.uint8))
+        
+        print(f"{['Train' if self.train else 'Valid']} Sample {self.patch_size} x {self.patch_size} from contour = {h}" + f" by {w} in {time.time() -t1} seconds")
+
+        # Draw the rectangles of sampled images on downsampled rgb
+        save_image = cv2.drawContours(save_image, self.contours, -1, (0,255,0), 1)
+        save_image = cv2.rectangle(save_image, (int(x_topleft // self.mag_factor) , int(y_topleft // self.mag_factor)),
+                                               (int((x_topleft + self.patch_size) // self.mag_factor), int((y_topleft + self.patch_size) // self.mag_factor)),
+                                               (0,255,0), 2)
+        
+        # for i in range(int(self.batch_size * (self.tumor_ratio))):
+        #     bb = random.choice(self.bounding_boxes_tumor)
+        #     b_x_start = int(bb[0]) * self.mag_factor
+        #     b_y_start = int(bb[1]) * self.mag_factor
+        #     b_x_end = (int(bb[0]) + int(bb[2])) * self.mag_factor
+        #     b_y_end = (int(bb[1]) + int(bb[3])) * self.mag_factor
+        #     h = int(bb[2]) * self.mag_factor
+        #     w = int(bb[3]) * self.mag_factor
+            
+        #     b_x_center = int((b_x_start + b_x_end) / 2)
+        #     b_y_center = int((b_y_start + b_y_end) / 2)
+        #     x_topleft = random.choice(range(b_x_center - int(0.5*self.patch_size),b_x_center))
+        #     y_topleft = random.choice(range(b_y_center - int(0.5*self.patch_size),b_y_center))
+            
+        #     t1 = time.time()
+        #     patch = img_reg.fetch(x_topleft, y_topleft, self.patch_size, self.patch_size)
+        #     # im = self.wsi.read_region((x_topleft, y_topleft),0,(self.patch_size, self.patch_size))
+
+        #     mask  = mask_reg.fetch(x_topleft, y_topleft, self.patch_size, self.patch_size)
+        #     print(f"Sample {self.patch_size} x {self.patch_size} from bounding box = {h}" + f" by {w} in {time.time() -t1} seconds")
+        #     numpy_batch_patch.append(np.ndarray((self.patch_size,self.patch_size,image.get('bands')),buffer=patch, dtype=np.uint8)[...,:3])
+        #     numpy_batch_mask.append(np.ndarray((self.patch_size,self.patch_size,mask_image.get('bands')),buffer=mask, dtype=np.uint8))
+        #     # Draw the rectangles of sampled images on downsampled rgb
+        #     save_image = cv2.rectangle(save_image, (int(x_topleft // self.mag_factor) , int(y_topleft // self.mag_factor)),
+        #                                            (int((x_topleft + self.patch_size) // self.mag_factor), int((y_topleft + self.patch_size) // self.mag_factor)),
+        #                                            (0,255,0), 2)
+
+
+        Image.fromarray(save_image[...,:3]).save(os.path.join(self.log_image_path,self.cur_wsi_path[0].split('/')[-1].replace(self.slide_format,'png')))
+
         
         # im = image.astype('uint8')
         # im = Image.fromarray(im)
         # im.save('test1.png')
-        image = imgtf.RGB2HSD(image/255.0).astype('float32')
-        image = self.transform(image)
+        for image in numpy_batch_patch:
+            image = imgtf.RGB2HSD(image/255.0).astype('float32')
+        
+        if args.mask_path:
+            for mask in numpy_batch_mask:
+                mask = mask
+        
+        image = make_dataset._transform(image,train=self.train)
         
         
         # im = image.permute(1,2,0)
@@ -451,10 +588,13 @@ class make_dataset(torch.utils.data.Dataset):
         # im = im.astype('uint8')
         # im = Image.fromarray(im)
         # im.save('test2.png')
-        mask  = mask 
-        sample = (image ,mask, self.image_list[idx])
-        return sample
+        if args.mask_path:
+            sample = (image ,mask, self.cur_wsi_path)
+        else:
+            sample = (image ,torch.zeros((1,self.patch_size,self.patch_size,1)), self.cur_wsi_path)
 
+
+        return sample
 
 # Dataset and hyperparameters
 if args.data == 'celebahq':
@@ -486,21 +626,19 @@ elif args.data == 'custom':
     im_dim = args.nclusters
     n_classes = args.nclusters
     init_layer = layers.LogitTransform(0.05)
+
     
-    image_list, mask_list, val_image_list, val_mask_list, sample_weight_list = get_image_lists(args)
-    train_dataset = make_dataset(image_list, mask_list,train=True)
-    test_dataset  = make_dataset(val_image_list, val_mask_list,train=False)
-    # Horovod: use DistributedSampler to partition the training data.
-    train_sampler = torch.utils.data.distributed.DistributedSampler(
-        train_dataset, num_replicas=hvd.size(), rank=hvd.rank())
+    train_dataset = make_dataset(args,train=True)
+    test_dataset  = make_dataset(args,train=False)
+    # # Horovod: use DistributedSampler to partition the training data.
+    # train_sampler = torch.utils.data.distributed.DistributedSampler(
+    #     train_dataset, num_replicas=hvd.size(), rank=hvd.rank())
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batchsize)
+    # # Horovod: use DistributedSampler to partition the test data.
+    # test_sampler = torch.utils.data.distributed.DistributedSampler(
+    #     test_dataset, num_replicas=hvd.size(), rank=hvd.rank())
     
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batchsize, sampler=train_sampler, **kwargs)
-    
-    # Horovod: use DistributedSampler to partition the test data.
-    test_sampler = torch.utils.data.distributed.DistributedSampler(
-        test_dataset, num_replicas=hvd.size(), rank=hvd.rank())
-    
-    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=args.val_batchsize, sampler=test_sampler, **kwargs)
+    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=args.val_batchsize)
 
 if args.task in ['classification', 'hybrid','gmm']:
     try:
@@ -515,7 +653,6 @@ if rank00():
     logger.info('Creating model.')
 
 input_size = (args.batchsize, im_dim + args.padding, args.imagesize, args.imagesize)
-dataset_size = len(train_loader.dataset)
 
 if args.squeeze_first:
     input_size = (input_size[0], input_size[1] * 4, input_size[2] // 2, input_size[3] // 2)
@@ -557,7 +694,6 @@ model = ResidualFlow(
     n_classes=n_classes,
     block_type=args.block,
 )
-
 
 
 # Custom
@@ -676,7 +812,6 @@ def compute_loss(x, model,gmm, beta=1.0):
     if args.squeeze_first:
         x = squeeze_layer(x)
     
-    
     if args.task == 'gmm' :
         D = x[:,0,...].unsqueeze(0).clone()
         D = rescale(D) # rescaling to [0,1]
@@ -743,106 +878,107 @@ def train(epoch,model,gmm):
 
     
     end = time.time()
-    for idx, (x, y, z) in enumerate(train_loader):
-        
-        # break one iter early to avoid out of sync
-        if idx == len(train_loader) - 1: break
-        x = x.to(device)
-        
-        global_itr = epoch * len(train_loader) + idx
-        update_lr(optimizer, global_itr)
-        
-        if rank00(): print(f'Step {global_itr}')
-        # Training procedure:
-        # for each sample x:
-        #   compute z = f(x)
-        #   maximize log p(x) = log p(z) - log |det df/dx|
-
-        beta = beta = min(1, global_itr / args.annealing_iters) if args.annealing_iters > 0 else 1.
-        bpd, logits, logpz, neg_delta_logp, params = compute_loss(x, model,gmm, beta=beta)
-
-        firmom, secmom = estimator_moments(model)
-
-        bpd_meter.update(bpd.item())
-        logpz_meter.update(logpz.item())
-        deltalogp_meter.update(neg_delta_logp.item())
-        firmom_meter.update(firmom)
-        secmom_meter.update(secmom)
-
-        # compute gradient and do SGD step
-        # params = list(model.parameters())
-        # grads  = [x.grad for x in params]
-        # if rank00():
-        #     print(params[-1])
-        #     print(grads[-1])
-            
-        # for p in model.parameters():
-        #     if utils.isnan(p.grad).any():
-        #         p.grad[p.grad!=p.grad]=0.001
-        #         p.grad[torch.abs(p.grad)==float('inf')]=0.001
-                
-        loss = bpd
-        loss.backward()
-
-
-        if global_itr % args.update_freq == args.update_freq - 1:
-            total_norm=0
-            if args.update_freq >= 1:
-                with torch.no_grad():
-                    grads = []
-                    for p in model.parameters():
-                        if p.grad is not None:
-                            p.grad /= args.update_freq
-                        grads.append(p.grad)
-                        param_norm = p.grad.data.norm(2)
-                        total_norm += param_norm.item() ** 2
-                        total_norm = total_norm ** (1. / 2)
-                    
-            # grad_norm = torch.nn.utils.clip_grad.clip_grad_norm_(model.parameters(), 1.)
-            grad_norm = total_norm
-
-
-            if args.learn_p: compute_p_grads(model)
-            
-
-            optimizer.step()
-            if rank00(): print("Optimizer.step() done")
-            optimizer.zero_grad()
-            
-            update_lipschitz(model)
-            ema.apply()
-
-            gnorm_meter.update(grad_norm)
-
-
-        # measure elapsed time
-        batch_time.update(time.time() - end)
-        end = time.time()
-        if idx % args.print_freq == 0 and rank00():
-            s = (
-                'Epoch: [{0}][{1}/{2}] | Time {batch_time.val:.3f} | '
-                'GradNorm {gnorm_meter.avg:.2f}'.format(
-                    epoch, idx, len(train_loader), batch_time=batch_time, gnorm_meter=gnorm_meter
-                )
-            )
-
-            if args.task in ['density', 'hybrid','gmm']:
-                s += (
-                    f' | Bits/dim {bpd_meter.val}({bpd_meter.avg}) | '
-                    # f' | params {[p.clone() for p in gmm.parameters().grad]}) | '
-                    f'Logpz {logpz_meter.avg} | '
-                    f'-DeltaLogp {deltalogp_meter.avg} | '
-                    f'EstMoment ({firmom_meter.avg},{secmom_meter.avg})'
-                    )
-            
-
-            logger.info(s)
-        if global_itr % args.vis_freq == 0 and idx > 0 and rank00():
-            visualize(epoch, model,gmm, idx, x, global_itr)
+    step = 0
+    while step < args.epoch_steps:
+        for idx, (x, y, z) in enumerate(train_loader):
+            # break one iter early to avoid out of sync
     
-        del x
-        torch.cuda.empty_cache()
-        gc.collect()
+            x = x.to(device)
+            global_itr = epoch*args.epoch_steps + step
+            update_lr(optimizer, global_itr)
+            
+            if rank00(): print(f'Step {step}')
+            # Training procedure:
+            # for each sample x:
+            #   compute z = f(x)
+            #   maximize log p(x) = log p(z) - log |det df/dx|
+    
+            beta = 1
+            bpd, logits, logpz, neg_delta_logp, params = compute_loss(x, model,gmm, beta=beta)
+    
+            firmom, secmom = estimator_moments(model)
+    
+            bpd_meter.update(bpd.item())
+            logpz_meter.update(logpz.item())
+            deltalogp_meter.update(neg_delta_logp.item())
+            firmom_meter.update(firmom)
+            secmom_meter.update(secmom)
+    
+            # compute gradient and do SGD step
+            # params = list(model.parameters())
+            # grads  = [x.grad for x in params]
+            # if rank00():
+            #     print(params[-1])
+            #     print(grads[-1])
+                
+            # for p in model.parameters():
+            #     if utils.isnan(p.grad).any():
+            #         p.grad[p.grad!=p.grad]=0.001
+            #         p.grad[torch.abs(p.grad)==float('inf')]=0.001
+                    
+            loss = bpd
+            loss.backward()
+    
+    
+            if global_itr % args.update_freq == args.update_freq - 1:
+                total_norm=0
+                if args.update_freq >= 1:
+                    with torch.no_grad():
+                        grads = []
+                        for p in model.parameters():
+                            if p.grad is not None:
+                                p.grad /= args.update_freq
+                            grads.append(p.grad)
+                            param_norm = p.grad.data.norm(2)
+                            total_norm += param_norm.item() ** 2
+                            total_norm = total_norm ** (1. / 2)
+                        
+                # grad_norm = torch.nn.utils.clip_grad.clip_grad_norm_(model.parameters(), 1.)
+                grad_norm = total_norm
+    
+    
+                if args.learn_p: compute_p_grads(model)
+                
+    
+                optimizer.step()
+                if rank00(): print("Optimizer.step() done")
+                optimizer.zero_grad()
+                
+                update_lipschitz(model)
+                ema.apply()
+    
+                gnorm_meter.update(grad_norm)
+    
+    
+            # measure elapsed time
+            batch_time.update(time.time() - end)
+            end = time.time()
+            if idx % args.print_freq == 0 and rank00():
+                s = (
+                    '\n\nEpoch: [{0}][{1}/{2}] | Time {batch_time.val:.3f} | '
+                    'GradNorm {gnorm_meter.avg:.2f}'.format(
+                        epoch, step, args.epoch_steps, batch_time=batch_time, gnorm_meter=gnorm_meter
+                    )
+                )
+    
+                if args.task in ['density', 'hybrid','gmm']:
+                    s += (
+                        f' | Bits/dim {bpd_meter.val}({bpd_meter.avg}) | '
+                        # f' | params {[p.clone() for p in gmm.parameters().grad]}) | '
+                        f'Logpz {logpz_meter.avg} | '
+                        f'-DeltaLogp {deltalogp_meter.avg} | '
+                        f'EstMoment ({firmom_meter.avg},{secmom_meter.avg})\n\n'
+                        )
+                
+    
+                logger.info(s)
+            if global_itr % args.vis_freq == 0 and idx > 0 and rank00():
+                visualize(epoch, model,gmm, idx, x, global_itr)
+        
+            del x
+            torch.cuda.empty_cache()
+            gc.collect()
+            step += 1
     return
 
 def savegamma(gamma,global_itr,pred=0):
@@ -1222,7 +1358,7 @@ def visualize(epoch, model, gmm, itr, real_imgs, global_itr):
         X_conv       = imgtf.image_dist_transform(X_hsd, mu, std, pi, mu_tmpl, std_tmpl, args)
         # X_conv_recon = imgtf.image_dist_transform(X_hsd, mu, std, recon, mu_tmpl, std_tmpl, args)
         # save a random image from the batch
-        im_no = random.randint(0,args.batchsize-1) 
+        im_no = random.randint(0,args.val_batchsize-1) 
         im_tmpl = real_imgs[im_no,...].cpu().numpy()
         im_tmpl = np.swapaxes(im_tmpl,0,1)
         im_tmpl = np.swapaxes(im_tmpl,1,-1)
@@ -1243,8 +1379,10 @@ def visualize(epoch, model, gmm, itr, real_imgs, global_itr):
         im_D = (im_D*255).astype('uint8')
         im_D = Image.fromarray(im_D,'L')
         im_D.save(os.path.join(args.save,'imgs',f'im_D_{global_itr}.png'))
-
-        im_conv = X_conv[im_no,...].reshape(args.imagesize,args.imagesize,3)
+        if args.val_batchsize>1:
+            im_conv = X_conv[im_no,...].reshape(args.imagesize,args.imagesize,3)
+        else:
+            im_conv = X_conv.reshape(args.imagesize,args.imagesize,3)
         im_conv = Image.fromarray(im_conv)
         im_conv.save(os.path.join(args.save,'imgs',f'im_conv_{global_itr}.png'))
         
@@ -1323,8 +1461,7 @@ def main():
         if rank00():
             logger.info('Current LR {}'.format(optimizer.param_groups[0]['lr']))
 
-        # Horovod: set epoch to sampler for shuffling.
-        train_sampler.set_epoch(epoch)
+
         
         train(epoch, model, gmm)
         lipschitz_constants.append(get_lipschitz_constants(model))

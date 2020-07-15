@@ -1,4 +1,3 @@
-import tensorflow as tf
 import numpy as np
 import os, fnmatch
 import pdb
@@ -42,16 +41,16 @@ def RGB2HSD(X):
     X_HSD = np.concatenate((D,cx,cy),-1)
     return X_HSD
     
-def HSD2RGB(X_HSD):
+# def HSD2RGB(X_HSD):
     
-    X_HSD_0, X_HSD_1, X_HSD_2  = tf.split(X_HSD, [1,1,1], axis=3)
-    D_R = (X_HSD_1+1) * X_HSD_0
-    D_G = 0.5*X_HSD_0*(2-X_HSD_1 + tf.sqrt(tf.constant(3.0))*X_HSD_2)
-    D_B = 0.5*X_HSD_0*(2-X_HSD_1 - tf.sqrt(tf.constant(3.0))*X_HSD_2)
+#     X_HSD_0, X_HSD_1, X_HSD_2  = tf.split(X_HSD, [1,1,1], axis=3)
+#     D_R = (X_HSD_1+1) * X_HSD_0
+#     D_G = 0.5*X_HSD_0*(2-X_HSD_1 + tf.sqrt(tf.constant(3.0))*X_HSD_2)
+#     D_B = 0.5*X_HSD_0*(2-X_HSD_1 - tf.sqrt(tf.constant(3.0))*X_HSD_2)
     
-    X_OD = tf.concat([D_R,D_G,D_B],3)
-    X_RGB = 1.0 * tf.exp(-X_OD)
-    return X_RGB   
+#     X_OD = tf.concat([D_R,D_G,D_B],3)
+#     X_RGB = 1.0 * tf.exp(-X_OD)
+#     return X_RGB   
     
 def HSD2RGB_Numpy(X_HSD):
     
@@ -68,7 +67,7 @@ def HSD2RGB_Numpy(X_HSD):
 
 def image_dist_transform(img_hsd, mu, std, gamma, mu_tmpl, std_tmpl, args):
 
-    batch_size = args.batchsize
+    batch_size = args.val_batchsize
     img_norm = np.empty((batch_size,args.imagesize, args.imagesize, 3, args.nclusters))
     mu  = np.reshape(mu, [mu.shape[0] ,batch_size,1,1,3])
     std = np.reshape(std,[std.shape[0],batch_size,1,1,3])
