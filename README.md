@@ -338,4 +338,5 @@ mpirun -map-by ppr:4:node -np $np -x LD_LIBRARY_PATH -x PATH python -u train_img
 
 ### TODO
 - [x] Implement multi node framework (Horovod)
+- [ ] Implement SURFSampler to sample patches at runtime
 
