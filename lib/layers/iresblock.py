@@ -153,7 +153,7 @@ class iResBlock(nn.Module):
                 jac_k = jac
                 for k in range(2, n_power_series + 1):
                     jac_k = torch.bmm(jac, jac_k)
-                    logdetgrad = logdetgrad + coeff_fn(k) * batch_trace(jac_k)
+                    logdetgrad = logdetgrad + (-1)**(k + 1) / k * coeff_fn(k) * batch_trace(jac_k)
 
             if self.training and self.n_power_series is None:
                 self.last_n_samples.copy_(torch.tensor(n_samples).to(self.last_n_samples))
@@ -189,9 +189,11 @@ class MemoryEfficientLogDetEstimator(torch.autograd.Function):
         ctx.training = training
         with torch.enable_grad():
             x = x.detach().requires_grad_(True)
+        
             g = gnet(x)
             ctx.g = g
             ctx.x = x
+            
             logdetgrad = estimator_fn(g, x, n_power_series, vareps, coeff_fn, training)
 
             if training:

@@ -130,28 +130,61 @@ Residual Flow Model Color Information
 
 optional arguments:
   -h, --help            show this help message and exit
-  --data {custom}
-  --dataroot DATAROOT
   --nclusters NCLUSTERS
                         The amount of tissue classes trained upon (default: 4)
-  --dataset DATASET     Which dataset to use. "16" for CAMELYON16 or "17" for
-                        CAMELYON17 (default: 0)
-  --train_centers TRAIN_CENTERS [TRAIN_CENTERS ...]
-                        Centers for training. Use -1 for all, otherwise 2 3 4
-                        eg. (default: [-1])
-  --val_centers VAL_CENTERS [VAL_CENTERS ...]
-                        Centers for validation. Use -1 for all, otherwise 2 3
-                        4 eg. (default: [-1])
-  --train_path TRAIN_PATH
-                        Folder of where the training data is located (default:
-                        None)
-  --valid_path VALID_PATH
-                        Folder where the validation data is located (default:
-                        None)
+  --slide_path SLIDE_PATH
+                        Folder of where the training data whole slide images
+                        are located (default: None)
+  --label_path LABEL_PATH
+                        Folder of where the training data whole slide images
+                        masks are located (default: None)
+  --valid_slide_path VALID_SLIDE_PATH
+                        Folder of where the validation data whole slide images
+                        are located (default: None)
+  --valid_label_path VALID_LABEL_PATH
+                        Folder of where the validation data whole slide images
+                        masks are located (default: None)
+  --test_path TEST_PATH
+                        Folder of where the testing data whole slide images
+                        are located (default: None)
+  --slide_format SLIDE_FORMAT
+                        In which format the whole slide images are saved.
+                        (default: xml)
+  --label_format LABEL_FORMAT
+                        In which format the masks are saved. (default: xml)
+  --bb_downsample BB_DOWNSAMPLE
+                        OpenSlide(<slide_path>).level_dimensions[bb_downsample
+                        ] is used for the contour construction as downsampling
+                        level of whole slide image (default: 7)
+  --log_dir LOG_DIR     Path of savepath of downsampled image with processed
+                        rectangles on it. (default: .)
+  --verbose {info,debug}
+                        Verbosity of the data sampler (default: info)
+  --batch_tumor_ratio BATCH_TUMOR_RATIO
+                        round(batch_tumor_ratio*batch_size) images will have
+                        tumor in the mini batch, set to 0 if no tumor
+                        (default: 0)
   --val_split VAL_SPLIT
   --debug               If running in debug mode (default: False)
+  --nworkers NWORKERS
+  --steps_per_epoch STEPS_PER_EPOCH
+                        The hard - coded amount of iterations in one epoch.
+                        (default: 1000)
+  --print-freq PRINT_FREQ
+                        Print progress every so iterations (default: 1)
+  --vis-freq VIS_FREQ   Visualize progress every so iterations (default: 5)
+  --save_every SAVE_EVERY
+                        Save model every so epochs (default: 1)
   --fp16_allreduce      If all reduce in fp16 (default: False)
-  --imagesize IMAGESIZE
+  --img_size IMG_SIZE
+  --evaluate            If running evaluation (default: False)
+  --resume RESUME
+  --save_conv SAVE_CONV
+                        Save converted images. (default: False)
+  --deploy_samples DEPLOY_SAMPLES
+                        How many samples should be deployed on. (default: 2)
+  --begin-epoch BEGIN_EPOCH
+  --gather_metrics      If gathering NMI metrics (default: False)
   --nbits NBITS
   --block {resblock,coupling}
   --coeff COEFF
@@ -196,15 +229,13 @@ optional arguments:
   --optimizer {adam,adamax,rmsprop,sgd}
   --scheduler {True,False}
   --nepochs NEPOCHS     Number of epochs for training (default: 1000)
-  --batchsize BATCHSIZE
+  --batch_size BATCH_SIZE
                         Minibatch size (default: 64)
   --lr LR               Learning rate (default: 0.001)
   --wd WD               Weight decay (default: 0)
   --warmup-iters WARMUP_ITERS
   --annealing-iters ANNEALING_ITERS
   --save SAVE           directory to save results (default: experiment1)
-  --val-batchsize VAL_BATCHSIZE
-                        minibatch size (default: 200)
   --seed SEED
   --ema-val {True,False}
                         Use exponential moving averages of parameters at
@@ -214,55 +245,21 @@ optional arguments:
   --scale-dim {True,False}
   --rcrop-pad-mode {constant,reflect}
   --padding-dist {uniform,gaussian}
-  --resume RESUME
-  --save_conv SAVE_CONV
-                        Save converted images. (default: False)
-  --begin-epoch BEGIN_EPOCH
-  --nworkers NWORKERS
-  --print-freq PRINT_FREQ
-                        Print progress every so iterations (default: 1)
-  --vis-freq VIS_FREQ   Visualize progress every so iterations (default: 5)
-  --save-every SAVE_EVERY
-                        VSave model every so epochs (default: 1)
 ```
 ### Training
 ```
-# CAMELYON17
-
-mpirun -map-by ppr:4:node -np $np -x LD_LIBRARY_PATH -x PATH python -u train_img_horo.py \
- --data custom \
- --dataset 17 \             # CAMELYON 17
- --train_centers 1 \
- --val_centers 1 \
- --train_path /nfs/managed_datasets/CAMELYON17/training/center_XX \
- --valid_path /nfs/managed_datasets/CAMELYON17/training/center_XX \
- --val_split 0.2 \
- --imagesize 256 \
- --batchsize 4 \
- --val-batchsize 4 \
- --actnorm True \
- --nbits 8 \
- --act swish \              # Swish activation
- --update-freq 1 \
- --n-exact-terms 8 \
- --fc-end False \
- --squeeze-first False \
- --factor-out True \
- --save experiments/test \
- --nblocks 16 \             # 1 residual block of length 16
- --vis-freq 50              # Visualize every 50 iterations
- --nepochs 5
- 
-# CUSTOM DATA
-
-mpirun -map-by ppr:4:node -np $np -x LD_LIBRARY_PATH -x PATH python -u train_img_horo.py \
- --data custom \
- --train_path /home/rubenh/examode/deeplab/CAMELYON16_PREPROCESSING/Radboudumc \
- --valid_path /home/rubenh/examode/deeplab/CAMELYON16_PREPROCESSING/Radboudumc \
- --val_split 0.2 \
- --imagesize 256 \
- --batchsize 4 \
- --val-batchsize 4 \
+mpirun --host $hosts -map-by ppr:4:node -np 32 -x LD_LIBRARY_PATH -x PATH python -u train_img_horo.py \
+ --slide_format tif \
+ --slide_path '/nfs/managed_datasets/CAMELYON17/training/center_*/' \
+ --label_path '/nfs/managed_datasets/CAMELYON17/training' \
+ --valid_slide_path '/home/rubenh/color-information/templates' \
+ --valid_label_path '/home/rubenh/color-information/templates' \
+ --test_path '/home/rubenh/color-information/test' \
+ --bb_downsample 7 \
+ --log_dir experiments/test/ \
+ --img_size 512 \
+ --batch_tumor_ratio 1 \
+ --batch_size 1 \
  --actnorm True \
  --nbits 8 \
  --act swish \
@@ -271,10 +268,14 @@ mpirun -map-by ppr:4:node -np $np -x LD_LIBRARY_PATH -x PATH python -u train_img
  --fc-end False \
  --squeeze-first False \
  --factor-out True \
+ --verbose debug \
  --save experiments/test \
  --nblocks 16 \
- --vis-freq 50 \             
- --nepochs 5
+ --steps_per_epoch 100 \
+ --save_every 2 \
+ --vis-freq 100 \
+ --nepochs 500 
+
  
 ```
 
@@ -284,56 +285,7 @@ mpirun -map-by ppr:4:node -np $np -x LD_LIBRARY_PATH -x PATH python -u train_img
 
 ### Evaluation
 ```
-# CUSTOM DATA
-
- mpirun -map-by ppr:4:node -np 8 -x LD_LIBRARY_PATH -x PATH python -u train_img_horo.py \
- --data custom \
- --fp16_allreduce \
- --train_path /home/rubenh/examode/deeplab/CAMELYON16_PREPROCESSING/Radboudumc \    # Insert template path
- --valid_path /home/rubenh/examode/deeplab/CAMELYON16_PREPROCESSING/TCGA \          # Insert target path  
- --imagesize 256 \
- --batchsize 4 \
- --val-batchsize 4 \
- --actnorm True \
- --nbits 8 \
- --act swish \
- --update-freq 1 \
- --n-exact-terms 8 \
- --fc-end False \
- --squeeze-first False \
- --factor-out True \
- --save experiments/test \
- --nblocks 21 \                                                                     # Make sure model is as large as checkpoint
- --nclusters 3 \                                                                    # Check no. of clusters of checkpoint
- --vis-freq 10 \
- --nepochs 5 \
- --resume /home/rubenh/examode/color-information/checkpoints/Radboudumc_8_workers.pth \
- --save_conv False                                                                  # Set to save converted images
-
-# CAMELYON17
-
-mpirun -map-by ppr:4:node -np $np -x LD_LIBRARY_PATH -x PATH python -u train_img_horo.py \
- --data custom \
- --dataset 17 \             # CAMELYON 17
- --train_centers 1 \        # Use medical center 1 as template
- --val_centers 2 \          # Use medical center 2 as target of model deployment
- --train_path /nfs/managed_datasets/CAMELYON17/training/center_XX \
- --valid_path /nfs/managed_datasets/CAMELYON17/training/center_XX \
- --val_split 0.2 \
- --imagesize 256 \
- --batchsize 4 \
- --val-batchsize 4 \
- --actnorm True \
- --nbits 8 \
- --act swish \
- --update-freq 1 \
- --n-exact-terms 8 \
- --fc-end False \
- --squeeze-first False \
- --factor-out True \
- --save experiments/test \
- --nblocks 16 \
- --resume /home/rubenh/examode/color-information/experiments/gmm11/models/most_recent.pth                                                                # specify save path to save transformed images
+                                                            # specify save path to save transformed images
 ```
 
 ### TODO

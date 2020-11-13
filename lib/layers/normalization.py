@@ -34,17 +34,18 @@ class MovingBatchNormNd(nn.Module):
     def forward(self, x, logpx=None):
         c = x.size(1)
         used_mean = self.running_mean.clone().detach()
-
+        
+        
         if self.training:
             # compute batch statistics
             x_t = x.transpose(0, 1).contiguous().view(c, -1)
             batch_mean = torch.mean(x_t, dim=1)
-
+            
             # moving average
             if self.bn_lag > 0:
                 used_mean = batch_mean - (1 - self.bn_lag) * (batch_mean - used_mean.detach())
                 used_mean /= (1. - self.bn_lag**(self.step[0] + 1))
-
+            
             # update running estimates
             self.running_mean -= self.decay * (self.running_mean - batch_mean.data)
             self.step += 1

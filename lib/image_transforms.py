@@ -67,8 +67,8 @@ def HSD2RGB_Numpy(X_HSD):
 
 def image_dist_transform(img_hsd, mu, std, gamma, mu_tmpl, std_tmpl, args):
 
-    batch_size = args.val_batchsize
-    img_norm = np.empty((batch_size,args.imagesize, args.imagesize, 3, args.nclusters))
+    batch_size = args.batch_size
+    img_norm = np.empty((batch_size,args.img_size, args.img_size, 3, args.nclusters))
     mu  = np.reshape(mu, [mu.shape[0] ,batch_size,1,1,3])
     std = np.reshape(std,[std.shape[0],batch_size,1,1,3])
     mu_tmpl  = np.reshape(mu_tmpl, [mu_tmpl.shape[0] ,batch_size,1,1,3])

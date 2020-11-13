@@ -207,6 +207,9 @@ class InducedNormConv2d(nn.Module):
                     self.v.resize_(num_input_dim).normal_(0, 1)
                     self.v.copy_(normalize_v(self.v, domain))
                     # forward call to infer the shape
+
+                    self.weight.to(torch.float32)
+
                     u = F.conv2d(
                         self.v.view(1, c, h, w), self.weight, stride=self.stride, padding=self.padding, bias=None
                     )
@@ -383,7 +386,7 @@ class InducedNormConv2d(nn.Module):
     def forward(self, input):
         if not self.initialized: self.spatial_dims.copy_(torch.tensor(input.shape[2:4]).to(self.spatial_dims))
         weight = self.compute_weight(update=False)
-        return F.conv2d(input, weight, self.bias, self.stride, self.padding, 1, 1)
+        return F.conv2d(input.to(torch.float32), weight, self.bias, self.stride, self.padding, 1, 1)
 
     def extra_repr(self):
         domain, codomain = self.compute_domain_codomain()

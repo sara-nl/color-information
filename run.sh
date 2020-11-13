@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH -N 2
-#SBATCH -t 6:00:00
+#SBATCH -t 10:00:00
 #SBATCH -p gpu_titanrtx
 np=$(($SLURM_NNODES * 4))
 
@@ -11,7 +11,10 @@ module load OpenMPI/3.1.4-GCC-8.3.0
 module load NCCL/2.5.6-CUDA-10.1.243
 module list
 
-source ~/virtualenvs/openslide-torch/bin/activate
+VENV_NAME=dspeed
+#source ~/virtualenvs/openslide-torch/bin/activate
+source ~/virtualenvs/dspeed/bin/activate
+
 
 # Setting ENV variables
 
@@ -19,13 +22,20 @@ source ~/virtualenvs/openslide-torch/bin/activate
 export MPICC=mpicc
 export MPICXX=mpicpc
 export HOROVOD_MPICXX_SHOW="mpicxx --showme:link"
-export HOROVOD_CUDA_HOME=$CUDA_HOME
-export HOROVOD_NCCL_HOME=$EBROOTNCCL
 export HOROVOD_WITH_PYTORCH=1 
-export PATH=$HOME/virtualenvs/openslide-torch/bin:$PATH
-export LD_LIBRARY_PATH=$HOME/virtualenvs/openslide-torch/lib64:$LD_LIBRARY_PATH
-export LD_LIBRARY_PATH=$HOME/virtualenvs/openslide-torch/lib:$LD_LIBRARY_PATH
-export CPATH=$HOME/virtualenvs/openslide-torch/include:$CPATH
+export HOROVOD_CUDA_HOME=$CUDA_HOME
+export HOROVOD_CUDA_INCLUDE=$CUDA_HOME/include
+export HOROVOD_CUDA_LIB=$CUDA_HOME/lib64
+export HOROVOD_NCCL_HOME=$EBROOTNCCL
+export HOROVOD_GPU_ALLREDUCE=NCCL
+export HOROVOD_GPU_BROADCAST=NCCL
+export HOROVOD_WITHOUT_GLOO=1
+export HOROVOD_WITHOUT_TENSORFLOW=1
+export HOROVOD_WITH_PYTORCH=1
+export PATH=$HOME/virtualenvs/$VENV_NAME/bin:$PATH
+export LD_LIBRARY_PATH=$HOME/virtualenvs/$VENV_NAME/lib64:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=$HOME/virtualenvs/$VENV_NAME/lib:$LD_LIBRARY_PATH
+export CPATH=$HOME/virtualenvs/$VENV_NAME/include:$CPATH
 
 
 
@@ -39,23 +49,29 @@ export CPATH=$HOME/virtualenvs/openslide-torch/include:$CPATH
 #pip install openslide-python
 #pip install torchsummary
 #pip install scikit-image
+#pip install torchsummary
+#pip install horovod[pytorch]
+
+
  
 
 
-cd ~/examode/color-information
+hosts=`sh ~/hosts.sh`
  
 
-#/nfs/managed_datasets/CAMELYON17/training/center_1/patches_positive_256 
-mpirun -map-by ppr:4:node -np 4 -x LD_LIBRARY_PATH -x PATH python -u train_img_horo.py \
- --data custom \
+#/nfs/managed_datasets/CAMELYON17/training/center_1/ 
+mpirun --host $hosts -map-by ppr:4:node -np 8 -x LD_LIBRARY_PATH -x PATH python -u train_img_horo.py \
  --slide_format tif \
- --slide_path /nfs/managed_datasets/CAMELYON16/TrainingData/Train_Tumor \
+ --slide_path '/nfs/managed_datasets/CAMELYON17/training/center_1/' \
+ --label_path '/nfs/managed_datasets/CAMELYON17/training' \
+ --valid_slide_path '/home/rubenh/color-information/templates' \
+ --valid_label_path '/home/rubenh/color-information/templates' \
+ --test_path '/home/rubenh/color-information/test' \
  --bb_downsample 7 \
- --log_image_path experiments/test/ \
- --val_split 0.2 \
- --imagesize 512 \
- --batchsize 1 \
- --val-batchsize 1 \
+ --log_dir experiments/test/ \
+ --img_size 512 \
+ --batch_tumor_ratio 1 \
+ --batch_size 1 \
  --actnorm True \
  --nbits 8 \
  --act swish \
@@ -64,10 +80,15 @@ mpirun -map-by ppr:4:node -np 4 -x LD_LIBRARY_PATH -x PATH python -u train_img_h
  --fc-end False \
  --squeeze-first False \
  --factor-out True \
+ --verbose debug \
  --save experiments/test \
  --nblocks 16 \
- --vis-freq 500              
- --nepochs 5
+ --steps_per_epoch 100 \
+ --save_every 2 \
+ --vis-freq 90 \
+ --nepochs 500 
+
+exit
 
 
 mpirun -map-by ppr:4:node -np 8 -x LD_LIBRARY_PATH -x PATH python -u train_img_horo.py \

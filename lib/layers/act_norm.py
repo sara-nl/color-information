@@ -40,11 +40,14 @@ class ActNormNd(nn.Module):
 
         bias = self.bias.view(*self.shape).expand_as(x)
         weight = self.weight.view(*self.shape).expand_as(x)
+        
+
         y = (x + bias) * torch.exp(weight)
 
         if logpx is None:
             return y
         else:
+
             return y, logpx - self._logdetgrad(x)
 
     def inverse(self, y, logpy=None):
