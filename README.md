@@ -127,11 +127,23 @@ Install requirements:
 pip install -r requirements.txt
 ```
 
+Find hosts of job (on SLURM) set to `hosts` variable with `slots_per_host` slots available per worker:
+```
+#!/bin/bash
+slots_per_host=4
+hosts=""
+for host in $(scontrol show hostnames);
+do
+	hosts="$hosts$host:$slots_per_host,"
+done
+hosts="${hosts%?}"
+echo $hosts
+```
+
 Options:
 
-
 ```
-python train_img_horo.py --help
+mpirun --host $hosts -map-by ppr:4:node -np 1 -x LD_LIBRARY_PATH -x PATH python -u train_img_horo.py --help
 
 >>>>>
 Residual Flow Model Color Information
@@ -157,7 +169,7 @@ optional arguments:
                         are located (default: None)
   --slide_format SLIDE_FORMAT
                         In which format the whole slide images are saved.
-                        (default: xml)
+                        (default: tif)
   --label_format LABEL_FORMAT
                         In which format the masks are saved. (default: xml)
   --bb_downsample BB_DOWNSAMPLE
@@ -174,7 +186,6 @@ optional arguments:
                         (default: 0)
   --val_split VAL_SPLIT
   --debug               If running in debug mode (default: False)
-  --nworkers NWORKERS
   --steps_per_epoch STEPS_PER_EPOCH
                         The hard - coded amount of iterations in one epoch.
                         (default: 1000)
@@ -184,13 +195,14 @@ optional arguments:
   --save_every SAVE_EVERY
                         Save model every so epochs (default: 1)
   --fp16_allreduce      If all reduce in fp16 (default: False)
-  --img_size IMG_SIZE
+  --img_size IMG_SIZE   The Field of View (patch size) to use (default: 32)
   --evaluate            If running evaluation (default: False)
-  --resume RESUME
-  --save_conv SAVE_CONV
-                        Save converted images. (default: False)
+  --resume RESUME       File of checkpoint (.pth file) if resuming from
+                        checkpoint (default: None)
+  --save_conv           Save converted images. (default: False)
   --deploy_samples DEPLOY_SAMPLES
-                        How many samples should be deployed on. (default: 2)
+                        How many samples of images should be used as templates
+                        in evaluation. (default: 2)
   --begin-epoch BEGIN_EPOCH
   --gather_metrics      If gathering NMI metrics (default: False)
   --nbits NBITS
@@ -243,7 +255,6 @@ optional arguments:
   --wd WD               Weight decay (default: 0)
   --warmup-iters WARMUP_ITERS
   --annealing-iters ANNEALING_ITERS
-  --save SAVE           directory to save results (default: experiment1)
   --seed SEED
   --ema-val {True,False}
                         Use exponential moving averages of parameters at
@@ -260,9 +271,6 @@ mpirun --host $hosts -map-by ppr:4:node -np 4 -x LD_LIBRARY_PATH -x PATH python 
  --slide_format tif \
  --slide_path '/nfs/managed_datasets/CAMELYON17/training/center_*/' \
  --label_path '/nfs/managed_datasets/CAMELYON17/training' \
- --valid_slide_path '/home/rubenh/color-information/templates' \
- --valid_label_path '/home/rubenh/color-information/templates' \
- --test_path '/home/rubenh/color-information/test' \
  --bb_downsample 7 \
  --log_dir experiments/test/ \
  --img_size 512 \
@@ -288,6 +296,7 @@ mpirun --host $hosts -map-by ppr:4:node -np 4 -x LD_LIBRARY_PATH -x PATH python 
 ```
 
 - This will train the invertible resnet for 500 epochs with 1 worker nodes with 4 GPU 's, and save visualisations and checkpoints in `experiments/test`.
+- It will train on _all_ medical centers of CAMELYON17 (`..../CAMELYON17/training/center_*/`)
     
 
 ### Evaluation
@@ -296,8 +305,6 @@ mpirun --host $hosts -map-by ppr:4:node -np 4 -x LD_LIBRARY_PATH -x PATH python 
  --slide_format tif \
  --slide_path '/nfs/managed_datasets/CAMELYON17/training/center_0/' \
  --label_path '/nfs/managed_datasets/CAMELYON17/training' \
- --valid_slide_path '/home/rubenh/color-information/templates' \
- --valid_label_path '/home/rubenh/color-information/templates' \
  --bb_downsample 7 \
  --log_dir experiments/test/ \
  --img_size 512 \
@@ -325,8 +332,6 @@ mpirun --host $hosts -map-by ppr:4:node -np 4 -x LD_LIBRARY_PATH -x PATH python 
 
 - This will evaluate the checkpoint with 1 worker nodes with 4 GPU 's in experiments/test/models for 100 samples, and save visualisations in `experiments/test`.
 
-### Pretrained Checkpoints
-- See folder `checkpoints/` for pretrained checkpoints on CAMELYON17 medical center_[0 - 4]
 
 ### TODO
 - [x] Implement multi node framework (Horovod)
