@@ -26,7 +26,6 @@ invertibility.
     ref: <a href="https://pubmed.ncbi.nlm.nih.gov/26353368/">Stain Specific Standardization of Whole-Slide Histopathological Images</a>
 
 
-<p align="center">
 <img  width="250" height="250" src=_images/im_tmpl_30.png> ==> <img  width="250" height="250" src=_images/im_gamma_30.png>
 
 
@@ -34,7 +33,6 @@ invertibility.
 
 
 <img  width="250" height="250" src=_images/im_test_30.png> ==> <img  width="250" height="250" src=_images/im_conv_30.png>
-</p>  
 > The tissue class membership, followed by conversion
 
 
@@ -72,12 +70,10 @@ invertibility.
 > Comparison done on CAMLEYON17 with RadboudUMC data (template), medical center 1 patches of 256 x 256, 4 independent runs of 50 epochs
 
 
-<p align="center">
 <img  width="250" height="250" src=_images/dcgmm_center_1_467.png> <==> <img  width="250" height="250" src=_images/tumor_center_1_256_467.png>
 
 
 <img  width="250" height="250" src=_images/dcgmm_center_1_468.png> <==> <img  width="250" height="250" src=_images/tumor_center_1_256_468.png>
-</p>  
 
 > Left: DCGMM | Right: iResFlow
 
