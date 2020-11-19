@@ -256,7 +256,7 @@ optional arguments:
 ```
 ### Training
 ```
-mpirun --host $hosts -map-by ppr:4:node -np 32 -x LD_LIBRARY_PATH -x PATH python -u train_img_horo.py \
+mpirun --host $hosts -map-by ppr:4:node -np 4 -x LD_LIBRARY_PATH -x PATH python -u train_img_horo.py \
  --slide_format tif \
  --slide_path '/nfs/managed_datasets/CAMELYON17/training/center_*/' \
  --label_path '/nfs/managed_datasets/CAMELYON17/training' \
@@ -287,12 +287,12 @@ mpirun --host $hosts -map-by ppr:4:node -np 32 -x LD_LIBRARY_PATH -x PATH python
  
 ```
 
-- This will train the invertible resnet for 500 epochs, and save visualisations and checkpoints in `experiments/test`.
+- This will train the invertible resnet for 500 epochs with 1 worker nodes with 4 GPU 's, and save visualisations and checkpoints in `experiments/test`.
     
 
 ### Evaluation
 ```
-mpirun --host $hosts -map-by ppr:4:node -np 1 -x LD_LIBRARY_PATH -x PATH python -u train_img_horo.py \
+mpirun --host $hosts -map-by ppr:4:node -np 4 -x LD_LIBRARY_PATH -x PATH python -u train_img_horo.py \
  --slide_format tif \
  --slide_path '/nfs/managed_datasets/CAMELYON17/training/center_0/' \
  --label_path '/nfs/managed_datasets/CAMELYON17/training' \
@@ -323,7 +323,7 @@ mpirun --host $hosts -map-by ppr:4:node -np 1 -x LD_LIBRARY_PATH -x PATH python 
  --deploy_samples 100 
 ```
 
-- This will evaluate the checkpoint in experiments/test/models for 100 samples, and save visualisations in `experiments/test`.
+- This will evaluate the checkpoint with 1 worker nodes with 4 GPU 's in experiments/test/models for 100 samples, and save visualisations in `experiments/test`.
 
 ### Pretrained Checkpoints
 - See folder `checkpoints/` for pretrained checkpoints on CAMELYON17 medical center_[0 - 4]
