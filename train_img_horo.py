@@ -61,25 +61,25 @@ parser.add_argument('--val_split', type=float, default=0.15)
 parser.add_argument('--debug', action='store_true', help='If running in debug mode')
 
 ## MEMORY / TIME ##
-parser.add_argument('--nworkers', type=int, default=8)
 parser.add_argument('--steps_per_epoch', type=int, help='The hard - coded amount of iterations in one epoch.', default=1000)
 parser.add_argument('--print-freq', help='Print progress every so iterations', type=int, default=1)
 parser.add_argument('--vis-freq', help='Visualize progress every so iterations', type=int, default=5)
 parser.add_argument('--save_every', help='Save model every so epochs', type=int, default=1)
 parser.add_argument('--fp16_allreduce', action='store_true', help='If all reduce in fp16')
-parser.add_argument('--img_size', type=int, default=32)
+parser.add_argument('--img_size', type=int, help='The Field of View (patch size) to use', default=32)
+
 ## EVALUATION ##
 parser.add_argument('--evaluate',action='store_true', help='If running evaluation')
-parser.add_argument('--resume', type=str, default=None)
-parser.add_argument('--save_conv', type=eval,help='Save converted images.', default=False)
-parser.add_argument('--deploy_samples', type=int,help='How many samples should be deployed on.', default=2)
+parser.add_argument('--resume', type=str, help='File of checkpoint (.pth file) if resuming from checkpoint',default=None)
+parser.add_argument('--save_conv', action='store_true',help='Save converted images.')
+parser.add_argument('--deploy_samples', type=int,help='How many samples of images should be used as templates in evaluation.', default=2)
 parser.add_argument('--begin-epoch', type=int, default=0)
 parser.add_argument('--gather_metrics', action='store_true', help='If gathering NMI metrics')
 
     
 
 ## INVERTIBLE RESIDUAL NETWORK ##
-parser.add_argument('--nbits', type=int, default=8)  # Only used for celebahq.
+parser.add_argument('--nbits', type=int, default=10)  # Only used for celebahq.
 parser.add_argument('--block', type=str, choices=['resblock', 'coupling'], default='resblock')
 
 parser.add_argument('--coeff', type=float, default=0.98)
@@ -126,7 +126,6 @@ parser.add_argument('--wd', help='Weight decay', type=float, default=0)
 
 parser.add_argument('--warmup-iters', type=int, default=0)
 parser.add_argument('--annealing-iters', type=int, default=0)
-parser.add_argument('--save', help='directory to save results', type=str, default='experiment1')
 parser.add_argument('--seed', type=int, default=None)
 parser.add_argument('--ema-val', type=eval, help='Use exponential moving averages of parameters at validation.', choices=[True, False], default=False)
 parser.add_argument('--update-freq', type=int, default=1)
@@ -154,11 +153,11 @@ print(f"hvd.size {hvd.size()} hvd.rank {hvd.rank()} hvd.local_rank {hvd.local_ra
 # logger
 try:
     if hvd.rank() == 0:
-        utils.makedirs(args.save)
-        logger = utils.get_logger(logpath=os.path.join(args.save, 'logs'), filepath=os.path.abspath(__file__))
+        utils.makedirs(args.log_dir)
+        logger = utils.get_logger(logpath=os.path.join(args.log_dir, 'logs'), filepath=os.path.abspath(__file__))
 except:
-    utils.makedirs(args.save)
-    logger = utils.get_logger(logpath=os.path.join(args.save, 'logs'), filepath=os.path.abspath(__file__))
+    utils.makedirs(args.log_dir)
+    logger = utils.get_logger(logpath=os.path.join(args.log_dir, 'logs'), filepath=os.path.abspath(__file__))
     
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -291,7 +290,7 @@ init_layer = layers.LogitTransform(0.05)
 
 
 train_dataset = make_dataset(args,mode='train')
-test_dataset  = make_dataset(args,mode='test')
+test_dataset  = make_dataset(args,mode='validation')
 # # Horovod: use DistributedSampler to partition the training data.
 # train_sampler = torch.utils.data.distributed.DistributedSampler(
 #     train_dataset, num_replicas=hvd.size(), rank=hvd.rank())
@@ -314,7 +313,8 @@ if hvd.rank() == 0:
     logger.info('Dataset loaded.')
     logger.info('Creating model.')
 
-input_size = (args.batch_size, im_dim + args.padding, args.img_size, args.img_size)
+# input_size = (args.batch_size, 1, (im_dim + args.padding) //  2 * args.img_size, (im_dim + args.padding) //  2 * args.img_size)
+input_size = (args.batch_size, (im_dim + args.padding), args.img_size, args.img_size)
 
 if args.squeeze_first:
     input_size = (input_size[0], input_size[1] * 4, input_size[2] // 2, input_size[3] // 2)
@@ -356,7 +356,6 @@ model = ResidualFlow(
     n_classes=n_classes,
     block_type=args.block,
 )
-
 
 
 
@@ -409,17 +408,20 @@ compression = hvd.Compression.fp16 if args.fp16_allreduce else hvd.Compression.n
 
 
 optimizer = hvd.DistributedOptimizer(optimizer,
+                                      backward_passes_per_step=args.update_freq,
                                       named_parameters=model.named_parameters(),
                                       compression=compression,
-                                      op=hvd.Average)
+                                      op=hvd.Adasum)
+
 # Horovod: broadcast parameters & optimizer state.
 
 best_test_bpd = math.inf
 
 
 if (args.resume is not None):
-
+    
     if hvd.rank() == 0: logger.info('Resuming model from {}'.format(args.resume))
+    
     with torch.no_grad():
         x = torch.rand(1, *input_size[1:]).to(device)
         model(x)
@@ -468,25 +470,28 @@ def compute_loss(x, model,gmm, beta=1.0):
 
     nvals = 2**args.nbits
     # print(f"max {torch.max(x)} {torch.min(x)}")
-    x, logpu = add_padding(x, nvals)
-
-    if args.squeeze_first:
-        x = squeeze_layer(x)
     
+        
     if args.task == 'gmm' :
+        # Get the D from the HSD (Actually the HSD consists of D,cx,cy see lib.image_transforms)
         D = x[:,0,...].unsqueeze(0).clone()
+        # You need to rescale to process by model, however use HSD for other
         D = rescale(D) # rescaling to [0,1]
+        if args.squeeze_first:
+            D = squeeze_layer(D)
+        
+        # Is for uniform or Gaussian padding, default is with zeros, and args.padding = 0 is default
+        D, logpu = add_padding(D, nvals)
+        
+        # Repeat D because we need args.nclusters for the GMM input shape (thus model output shape)
         D = D.repeat(1, args.nclusters, 1, 1)
         z_logp = model(D.view(-1, *input_size[1:]), 0, classify=False)
-
-        
         z, delta_logp = z_logp
         # log p(z)
         # logpz = standard_normal_logprob(z).view(z.size(0), -1).sum(1, keepdim=True)
-        logpz, params = gmm(z.view(-1,args.nclusters,args.img_size,args.img_size), x.permute(0,2,3,1))
+        logpz, params = gmm(z.view(-1,args.nclusters,args.img_size,args.img_size), x)
 
         # log p(x)
-        
         logpx = logpz - beta * delta_logp - np.log(nvals) * (args.img_size * args.img_size * (im_dim + args.padding)) - logpu
         bits_per_dim = -torch.mean(logpx) / (args.img_size * args.img_size * im_dim) / np.log(2)
 
@@ -532,6 +537,7 @@ ce_meter = utils.RunningAverageMeter(0.97)
 
 
 
+
 def train(epoch,model,gmm):
 
     model.train()
@@ -553,7 +559,6 @@ def train(epoch,model,gmm):
             #   compute z = f(x)
             #   maximize log p(x) = log p(z) - log |det df/dx|
             #   see https://arxiv.org/abs/1906.02735
-    
             beta = 1
             bpd, logits, logpz, neg_delta_logp, params = compute_loss(x, model,gmm, beta=beta)
     
@@ -564,47 +569,39 @@ def train(epoch,model,gmm):
             deltalogp_meter.update(neg_delta_logp.item())
             firmom_meter.update(firmom)
             secmom_meter.update(secmom)
-
+            
                     
             loss = bpd
             loss.backward()
-
+            
             if global_itr % args.update_freq == args.update_freq - 1:
-                total_norm=0
-                if args.update_freq >= 1:
+                
+                if args.update_freq > 1:
                     with torch.no_grad():
-                        grads = []
                         for p in model.parameters():
+                            
+
                             if p.grad is not None:
                                 p.grad /= args.update_freq
-                                grads.append(p.grad)
-                                param_norm = p.grad.data.norm(2)
-                                total_norm += param_norm.item() ** 2
-                                total_norm = total_norm ** (1. / 2)
-                            
-                grad_norm = torch.nn.utils.clip_grad_value_(model.parameters(), 10.)
-                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 10.)
-                grad_norm = total_norm
-        
-    
+ 
+                grad_norm = torch.nn.utils.clip_grad.clip_grad_norm_(model.parameters(), 1.)
                 if args.learn_p: compute_p_grads(model)
-                
     
-                optimizer.step()
-
-                if hvd.rank() == 0: print("Optimizer.step() done")
-                optimizer.zero_grad()
                 
+                optimizer.step()
+                optimizer.zero_grad()
                 update_lipschitz(model)
                 ema.apply()
     
                 gnorm_meter.update(grad_norm)
-    
+            
+
+                
             # measure elapsed time
             steps_per_epoch = args.steps_per_epoch
             batch_time.update(time.time() - end)
             end = time.time()
-            if idx % args.print_freq == 0:
+            if global_itr % args.print_freq == 0:
                 s = (
                     '\n\nEpoch: [{0}][{1}/{2}] | Time {batch_time.val:.3f} | '
                     'GradNorm {gnorm_meter.avg:.2f}'.format(
@@ -635,7 +632,6 @@ def train(epoch,model,gmm):
 def savegamma(gamma,global_itr,pred=0):
     ClsLbl = np.argmax(gamma, axis=-1)
     ClsLbl = ClsLbl.astype('float32')
-    
     ColorTable = [[255,0,0],[0,255,0],[0,0,255],[255,255,0], [0,255,255], [255,0,255]]
     colors = np.array(ColorTable, dtype='float32')
     Msk = np.tile(np.expand_dims(ClsLbl, axis=-1),(1,1,1,3))
@@ -648,13 +644,13 @@ def savegamma(gamma,global_itr,pred=0):
     im_gamma = Msk[0].astype('uint8')
     im_gamma = Image.fromarray(im_gamma)
     if pred == 0:
-        im_gamma.save(os.path.join(args.save,'imgs',f'im_gamma_{global_itr}.png'))
+        im_gamma.save(os.path.join(args.log_dir,'imgs',f'im_gamma_{global_itr}.png'))
     elif pred == 1:
-        im_gamma.save(os.path.join(args.save,'imgs',f'im_pi_{global_itr}.png'))
+        im_gamma.save(os.path.join(args.log_dir,'imgs',f'im_pi_{global_itr}.png'))
     elif pred == 2:
-        im_gamma.save(os.path.join(args.save,'imgs',f'im_recon_{global_itr}.png'))
+        im_gamma.save(os.path.join(args.log_dir,'imgs',f'im_recon_{global_itr}.png'))
     elif pred == 3:
-        im_gamma.save(os.path.join(args.save,'imgs',f'im_fake_{global_itr}.png'))
+        im_gamma.save(os.path.join(args.log_dir,'imgs',f'im_fake_{global_itr}.png'))
         
     im_gamma.close()
     return
@@ -666,7 +662,7 @@ def validate(epoch, model,gmm, ema=None):
     """
     
         
-    if hvd.rank() == 0: utils.makedirs(os.path.join(args.save, 'imgs')), print("Starting Deployment")
+    if hvd.rank() == 0: utils.makedirs(os.path.join(args.log_dir, 'imgs')), print("Starting Deployment")
 
 
     if ema is not None:
@@ -684,7 +680,9 @@ def validate(epoch, model,gmm, ema=None):
 
     if hvd.rank() == 0: print(f"Deploying on {args.deploy_samples} templates...")
     for idx, (x, y) in enumerate(train_loader):
+        
         if idx == args.deploy_samples: break
+        print(f"Worker {hvd.rank()}: template {idx + 1} / {args.deploy_samples}")
         t1 = time.time()
         
         x = x.to(device)
@@ -702,17 +700,17 @@ def validate(epoch, model,gmm, ema=None):
             
             z, delta_logp = z_logp
             if isinstance(gmm,torch.nn.DataParallel):
-                logpz, params = gmm.module(z.view(-1,args.nclusters,args.img_size,args.img_size), x.permute(0,2,3,1))
+                logpz, params = gmm.module(z.view(-1,args.nclusters,args.img_size,args.img_size), x)
             else:
-                logpz, params = gmm(z.view(-1,args.nclusters,args.img_size,args.img_size), x.permute(0,2,3,1))
+                logpz, params = gmm(z.view(-1,args.nclusters,args.img_size,args.img_size), x)
         
 
         
         mu, std, gamma =  params
         
-        mu  = mu.cpu().numpy()
-        std = std.cpu().numpy()
-        gamma    = gamma.cpu().numpy() 
+        mu      = mu.cpu().numpy()
+        std     = std.cpu().numpy()
+        gamma   = gamma.cpu().numpy() 
     
         
         mu  = mu[...,np.newaxis]
@@ -735,9 +733,9 @@ def validate(epoch, model,gmm, ema=None):
                 im_tmpl = np.swapaxes(im_tmpl,0,1)  
                 im_tmpl = np.swapaxes(im_tmpl,1,-1)
                 im_tmpl = imgtf.HSD2RGB_Numpy(im_tmpl)
-                im_tmpl = (im_tmpl*255).astype('uint8')
+                im_tmpl = (im_tmpl).astype('uint8')
                 im_tmpl = Image.fromarray(im_tmpl)
-                im_tmpl.save(os.path.join(args.save,'imgs',f'im_tmpl-{path.split("/")[-1]}-eval.png'))
+                im_tmpl.save(os.path.join(args.log_dir,'imgs',f'im_tmpl-{path.split("/")[-1]}-eval.png'))
                 im_tmpl.close()
         
             
@@ -773,6 +771,7 @@ def validate(epoch, model,gmm, ema=None):
     if hvd.rank() == 0: print(f"Deploying on {args.deploy_samples} test images...")
     for idx, (x_test, y_test) in enumerate(test_loader):
         if idx == args.deploy_samples: break
+        print(f"Worker {hvd.rank()}: template {idx + 1} / {args.deploy_samples}")
         t1 = time.time()
         x_test = x_test.to(device)
         
@@ -790,9 +789,9 @@ def validate(epoch, model,gmm, ema=None):
         
             z, delta_logp = z_logp
             if isinstance(gmm,torch.nn.DataParallel):
-                logpz, params = gmm.module(z.view(-1,args.nclusters,args.img_size,args.img_size), x_test.permute(0,2,3,1))
+                logpz, params = gmm.module(z.view(-1,args.nclusters,args.img_size,args.img_size), x_test)
             else:
-                logpz, params = gmm(z.view(-1,args.nclusters,args.img_size,args.img_size), x_test.permute(0,2,3,1))
+                logpz, params = gmm(z.view(-1,args.nclusters,args.img_size,args.img_size), x_test)
 
         
         mu, std, pi =  params
@@ -818,6 +817,7 @@ def validate(epoch, model,gmm, ema=None):
         ClsLbl = np.argmax(np.asarray(pi),axis=-1) + 1
         ClsLbl = ClsLbl.astype('int32')
         mean_rgb = np.mean(X_conv,axis=-1)
+
         for tc in range(1,args.nclusters+1):
             msk = torch.where(torch.tensor(ClsLbl) == tc , torch.tensor(1),torch.tensor(0))
             msk = [(i,msk.cpu().numpy()) for i, msk in enumerate(msk) if torch.max(msk).cpu().numpy()] # skip metric if no class labels are found
@@ -846,14 +846,14 @@ def validate(epoch, model,gmm, ema=None):
                 im_test = np.swapaxes(im_test,0,1)
                 im_test = np.swapaxes(im_test,1,-1)
                 im_test = imgtf.HSD2RGB_Numpy(im_test)
-                im_test = (im_test*255).astype('uint8')
+                im_test = (im_test).astype('uint8')
                 im_test = Image.fromarray(im_test)
-                im_test.save(os.path.join(args.save,'imgs',f'im_test-{path.split("/")[-1]}-eval.png'))
+                im_test.save(os.path.join(args.log_dir,'imgs',f'im_test-{path.split("/")[-1]}-eval.png'))
                 im_test.close()
             # for ct, img in enumerate(X_conv):
-                im_conv = X_conv[ct].reshape(args.img_size,args.img_size,3)
+                im_conv = X_conv.reshape(args.img_size,args.img_size,3)
                 im_conv = Image.fromarray(im_conv)
-                im_conv.save(os.path.join(args.save,'imgs',f'im_conv-{path.split("/")[-1]}-eval.png'))
+                im_conv.save(os.path.join(args.log_dir,'imgs',f'im_conv-{path.split("/")[-1]}-eval.png'))
                 im_conv.close()
             
             # savegamma(pi,f"{idx}-eval",pred=1)
@@ -888,16 +888,16 @@ def validate(epoch, model,gmm, ema=None):
         mpl.use('Agg')
         import matplotlib.pyplot as plt
         fig1, ax1 = plt.subplots()
-        ax1.set_title(f'Box Plot Eval {args.save.split("/")[-1]}')
+        ax1.set_title(f'Box Plot Eval {args.log_dir.split("/")[-1]}')
         ax1.boxplot(tot_nmi)
         
         
         if hvd.rank() == 0:
-            plt.savefig(f'worker-{hvd.rank()}-{args.save.split("/")[-1]}-boxplot-eval.png')
+            plt.savefig(f'worker-{hvd.rank()}-{args.log_dir.split("/")[-1]}-boxplot-eval.png')
             print(f"Average sd = {np.array(av_sd).mean()}")
             print(f"Average cv = {np.array(av_cv).mean()}")
             import csv
-            file = open(f'worker-{hvd.rank()}-{args.save.split("/")[-1]}-metrics-eval.csv',"w")
+            file = open(f'worker-{hvd.rank()}-{args.log_dir.split("/")[-1]}-metrics-eval.csv',"w")
             writer = csv.writer(file)
             for key, value in metrics.items():
                 writer.writerow([key, value])
@@ -933,7 +933,7 @@ def validate(epoch, model,gmm, ema=None):
 def visualize(epoch, model, gmm, itr, real_imgs, global_itr):
     model.eval()
     gmm.eval()
-    if hvd.rank() == 0: utils.makedirs(os.path.join(args.save, 'imgs')), print("Starting Visualisation...")
+    if hvd.rank() == 0: utils.makedirs(os.path.join(args.log_dir, 'imgs')), print("Starting Visualisation...")
 
     for x_test, y_test in test_loader:
         # x_test = x_test[0,...].unsqueeze(0)
@@ -954,9 +954,9 @@ def visualize(epoch, model, gmm, itr, real_imgs, global_itr):
             
             z, delta_logp = z_logp
             if isinstance(gmm,torch.nn.DataParallel):
-                logpz, params = gmm.module(z.view(-1,args.nclusters,args.img_size,args.img_size), x.permute(0,2,3,1))
+                logpz, params = gmm.module(z.view(-1,args.nclusters,args.img_size,args.img_size), x)
             else:
-                logpz, params = gmm(z.view(-1,args.nclusters,args.img_size,args.img_size), x.permute(0,2,3,1))
+                logpz, params = gmm(z.view(-1,args.nclusters,args.img_size,args.img_size), x)
 
     
         mu_tmpl, std_tmpl, gamma =  params
@@ -967,8 +967,8 @@ def visualize(epoch, model, gmm, itr, real_imgs, global_itr):
         mu_tmpl  = mu_tmpl[...,np.newaxis]
         std_tmpl = std_tmpl[...,np.newaxis]
         
-        mu_tmpl = np.swapaxes(mu_tmpl,0,1) # (3,4,1) -> (4,3,1)
-        mu_tmpl = np.swapaxes(mu_tmpl,1,2) # (4,3,1) -> (4,1,3)
+        mu_tmpl  = np.swapaxes(mu_tmpl,0,1) # (3,4,1) -> (4,3,1)
+        mu_tmpl  = np.swapaxes(mu_tmpl,1,2) # (4,3,1) -> (4,1,3)
         std_tmpl = np.swapaxes(std_tmpl,0,1) # (3,4,1) -> (4,3,1)
         std_tmpl = np.swapaxes(std_tmpl,1,2) # (4,3,1) -> (4,1,3)
         
@@ -988,9 +988,9 @@ def visualize(epoch, model, gmm, itr, real_imgs, global_itr):
 
             z, delta_logp = z_logp
             if isinstance(gmm,torch.nn.DataParallel):
-                logpz, params = gmm.module(z.view(-1,args.nclusters,args.img_size,args.img_size), x_test.permute(0,2,3,1))
+                logpz, params = gmm.module(z.view(-1,args.nclusters,args.img_size,args.img_size), x_test)
             else:
-                logpz, params = gmm(z.view(-1,args.nclusters,args.img_size,args.img_size), x_test.permute(0,2,3,1))
+                logpz, params = gmm(z.view(-1,args.nclusters,args.img_size,args.img_size), x_test)
 
         mu, std, pi =  params
         mu  = mu.cpu().numpy()
@@ -1010,41 +1010,53 @@ def visualize(epoch, model, gmm, itr, real_imgs, global_itr):
     
         X_hsd = np.swapaxes(x_test.cpu().numpy(),1,2)
         X_hsd = np.swapaxes(X_hsd,2,3)
-
+        
+        X_hsd        = X_hsd 
         X_conv       = imgtf.image_dist_transform(X_hsd, mu, std, pi, mu_tmpl, std_tmpl, args)
         # X_conv_recon = imgtf.image_dist_transform(X_hsd, mu, std, recon, mu_tmpl, std_tmpl, args)
         # save a random image from the batch
+        """
+        Here images are saved:
+            1. Get image at im_no
+            2. Transfer to cpu
+            3. Watch torch ordering, bring back to RGB
+            4. see lib.image_tranforms for HSD2RGB_Numpy
+            5. Watch transform and *
+            6. save with global_itr
+        """
         im_no = random.randint(0,args.batch_size-1) 
         im_tmpl = real_imgs[im_no,...].cpu().numpy()
         im_tmpl = np.swapaxes(im_tmpl,0,1)
         im_tmpl = np.swapaxes(im_tmpl,1,-1)
+        im_tmpl = im_tmpl
         im_tmpl = imgtf.HSD2RGB_Numpy(im_tmpl)
-        im_tmpl = (im_tmpl*255).astype('uint8')
-        im_tmpl = Image.fromarray(im_tmpl)
-        im_tmpl.save(os.path.join(args.save,'imgs',f'im_tmpl_{global_itr}.png'))
+        im_tmpl = Image.fromarray(im_tmpl.astype('uint8'))
+        im_tmpl.save(os.path.join(args.log_dir,'imgs',f'im_tmpl_{global_itr}.png'))
         
         im_test = x_test[im_no,...].cpu().numpy()
         im_test = np.swapaxes(im_test,0,1)
         im_test = np.swapaxes(im_test,1,-1)
+        im_test = im_test
         im_test = imgtf.HSD2RGB_Numpy(im_test)
-        im_test = (im_test*255).astype('uint8')
-        im_test = Image.fromarray(im_test)
-        im_test.save(os.path.join(args.save,'imgs',f'im_test_{global_itr}.png'))
+        im_test = Image.fromarray(im_test.astype('uint8'))
+        im_test.save(os.path.join(args.log_dir,'imgs',f'im_test_{global_itr}.png'))
         
-        im_D = D[0,0,...].cpu().numpy()
-        im_D = (im_D*255).astype('uint8')
-        im_D = Image.fromarray(im_D,'L')
-        im_D.save(os.path.join(args.save,'imgs',f'im_beforegmm_{global_itr}.png'))
+        ## This will be the image coming out of invert resnet ##
+        # D = x_test[:,0,...].unsqueeze(1).clone()
+        # im_D = D[0,0,...].cpu().numpy()
+        # im_D = (im_D).astype('uint8')
+        # im_D = Image.fromarray(im_D,'L')
+        # im_D.save(os.path.join(args.log_dir,'imgs',f'im_beforegmm_{global_itr}.png'))
         if args.batch_size>1:
             im_conv = X_conv[im_no,...].reshape(args.img_size,args.img_size,3)
         else:
             im_conv = X_conv.reshape(args.img_size,args.img_size,3)
         im_conv = Image.fromarray(im_conv)
-        im_conv.save(os.path.join(args.save,'imgs',f'im_conv_{global_itr}.png'))
+        im_conv.save(os.path.join(args.log_dir,'imgs',f'im_conv_{global_itr}.png'))
         
         # im_conv_recon = np.squeeze(X_conv_recon)[im_no,...].reshape(args.img_size,args.img_size,3)
         # im_conv_recon = Image.fromarray(im_conv_recon)
-        # im_conv_recon.save(os.path.join(args.save,'imgs',f'im_conv_recon_{global_itr}.png'))
+        # im_conv_recon.save(os.path.join(args.log_dir,'imgs',f'im_conv_recon_{global_itr}.png'))
         
         # gamma
         savegamma(gamma,global_itr,pred=0)
@@ -1109,7 +1121,7 @@ def main():
     ords = []
 
     if args.evaluate:
-        assert isinstance(args.resume,str),"WARNING: CANNOT START EVALUATION WITHOUT MODEL DIRECTORY (args.resume -> str)"
+        assert isinstance(args.resume,str),"WARNING: CANNOT START EVALUATION WITHOUT CHECKPOINT DIRECTORY (args.resume -> str)"
         validate(args.begin_epoch - 1, model,gmm)
         sys.exit(0)
         
@@ -1134,7 +1146,7 @@ def main():
             scheduler.step()
 
         
-        if hvd.rank() == 0 and epoch % args.save_every == 0 and epoch > 0:
+        if hvd.rank() == 0 and epoch % args.save_every == 0:
             print("Saving model...")
             utils.save_checkpoint({
                 'state_dict': model.state_dict(),
@@ -1142,7 +1154,7 @@ def main():
                 'args': args,
                 'ema': ema,
                 # 'test_bpd': test_bpd,
-            }, os.path.join(args.save, 'models'), epoch, last_checkpoints, num_checkpoints=5)
+            }, os.path.join(args.log_dir, 'models'), epoch, last_checkpoints, num_checkpoints=5)
     
             torch.save({
                 'state_dict': model.state_dict(),
@@ -1150,7 +1162,7 @@ def main():
                 'args': args,
                 'ema': ema,
                 # 'test_bpd': test_bpd,
-            }, os.path.join(args.save, 'models', f'most_recent_{hvd.size()}_workers.pth'))
+            }, os.path.join(args.log_dir, 'models', f'most_recent_{hvd.size()}_workers.pth'))
         
         # validate(args.begin_epoch - 1, model,gmm, ema)
             

@@ -83,35 +83,43 @@ invertibility.
 
 
 # Setup
-These steps ran on LISA this module environment, where we first clone and enable the 2020 software stack: 
+- First install a virtual environment with OpenSlide and PyVips from https://github.com/sara-nl/SURF-deeplab.
+- This will install the libraries needed for processing of Whole Slide Images.
 
-```
-cd ~
-git clone https://git.ia.surfsara.nl/environment-modules/environment-modules-lisa.git
-```
 
 Load Modules:
 ```
 module purge
-module use ~/environment-modules-lisa
 module load 2020
-module load TensorFlow/2.1.0-foss-2019b-Python-3.7.4-CUDA-10.1.243
+module load NCCL/2.7.8-gcccuda-2020a
+module load OpenMPI/4.0.3-GCC-9.3.0
 ```
 Set Environment Variables:
 ```
+VENV_NAME=openslide-pyvips
+source ~/virtualenvs/openslide-pyvips/bin/activate
+
 # Setting ENV variables
+
+export MPICC=mpicc
+export MPICXX=mpicpc
+export HOROVOD_MPICXX_SHOW="mpicxx --showme:link"
+export HOROVOD_WITH_PYTORCH=1 
 export HOROVOD_CUDA_HOME=$CUDA_HOME
 export HOROVOD_CUDA_INCLUDE=$CUDA_HOME/include
 export HOROVOD_CUDA_LIB=$CUDA_HOME/lib64
 export HOROVOD_NCCL_HOME=$EBROOTNCCL
 export HOROVOD_GPU_ALLREDUCE=NCCL
-# Export MPICC
-export MPICC=mpicc
-export MPICXX=mpicpc
-export HOROVOD_MPICXX_SHOW="mpicxx --showme:link"
+export HOROVOD_GPU_BROADCAST=NCCL
+export HOROVOD_WITHOUT_GLOO=1
+export HOROVOD_WITHOUT_TENSORFLOW=1
 export HOROVOD_WITH_PYTORCH=1
-```
+export PATH=$HOME/virtualenvs/$VENV_NAME/bin:$PATH
+export LD_LIBRARY_PATH=$HOME/virtualenvs/$VENV_NAME/lib64:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=$HOME/virtualenvs/$VENV_NAME/lib:$LD_LIBRARY_PATH
+export CPATH=$HOME/virtualenvs/$VENV_NAME/include:$CPATH
 
+```
 
 
 Install requirements:
@@ -279,14 +287,43 @@ mpirun --host $hosts -map-by ppr:4:node -np 32 -x LD_LIBRARY_PATH -x PATH python
  
 ```
 
-- This will train the invertible resnet for 5 epochs, and save visualisations and checkpoints in `experiments/test`.
-    
+- This will train the invertible resnet for 500 epochs, and save visualisations and checkpoints in `experiments/test`.
     
 
 ### Evaluation
 ```
-                                                            # specify save path to save transformed images
+mpirun --host $hosts -map-by ppr:4:node -np 1 -x LD_LIBRARY_PATH -x PATH python -u train_img_horo.py \
+ --slide_format tif \
+ --slide_path '/nfs/managed_datasets/CAMELYON17/training/center_0/' \
+ --label_path '/nfs/managed_datasets/CAMELYON17/training' \
+ --valid_slide_path '/home/rubenh/color-information/templates' \
+ --valid_label_path '/home/rubenh/color-information/templates' \
+ --bb_downsample 7 \
+ --log_dir experiments/test/ \
+ --img_size 512 \
+ --batch_tumor_ratio 1 \
+ --batch_size 1 \
+ --actnorm True \
+ --nbits 9 \
+ --act swish \
+ --update-freq 1 \
+ --n-exact-terms 8 \
+ --fc-end False \
+ --squeeze-first False \
+ --factor-out True \
+ --verbose debug \
+ --nblocks 16 \
+ --steps_per_epoch 25 \
+ --save_every 1 \
+ --vis-freq 10 \
+ --nepochs 2 \
+ --evaluate \
+ --resume experiments/test/models/most_recent_1_workers.pth \
+ --save_conv \
+ --deploy_samples 100 
 ```
+
+- This will evaluate the checkpoint in experiments/test/models for 100 samples, and save visualisations in `experiments/test`.
 
 ### TODO
 - [x] Implement multi node framework (Horovod)

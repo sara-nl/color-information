@@ -1,15 +1,16 @@
 #!/bin/bash
 
-#SBATCH -N 2
-#SBATCH -t 10:00:00
+#SBATCH -N 1
+#SBATCH -t 12:00:00
 #SBATCH -p gpu_titanrtx
 np=$(($SLURM_NNODES * 4))
 
 module purge
-module load 2019
+module load 2020
 module load OpenMPI/3.1.4-GCC-8.3.0
 module load NCCL/2.5.6-CUDA-10.1.243
 module list
+
 
 VENV_NAME=dspeed
 #source ~/virtualenvs/openslide-torch/bin/activate
@@ -60,20 +61,19 @@ hosts=`sh ~/hosts.sh`
  
 
 #/nfs/managed_datasets/CAMELYON17/training/center_1/ 
-mpirun --host $hosts -map-by ppr:4:node -np 8 -x LD_LIBRARY_PATH -x PATH python -u train_img_horo.py \
+mpirun --host $hosts -map-by ppr:4:node -np 1 -x LD_LIBRARY_PATH -x PATH python -u train_img_horo.py \
  --slide_format tif \
- --slide_path '/nfs/managed_datasets/CAMELYON17/training/center_1/' \
+ --slide_path '/nfs/managed_datasets/CAMELYON17/training/center_0/' \
  --label_path '/nfs/managed_datasets/CAMELYON17/training' \
  --valid_slide_path '/home/rubenh/color-information/templates' \
  --valid_label_path '/home/rubenh/color-information/templates' \
- --test_path '/home/rubenh/color-information/test' \
  --bb_downsample 7 \
- --log_dir experiments/test/ \
+ --log_dir experiments/center_0/ \
  --img_size 512 \
  --batch_tumor_ratio 1 \
  --batch_size 1 \
  --actnorm True \
- --nbits 8 \
+ --nbits 9 \
  --act swish \
  --update-freq 1 \
  --n-exact-terms 8 \
@@ -81,13 +81,132 @@ mpirun --host $hosts -map-by ppr:4:node -np 8 -x LD_LIBRARY_PATH -x PATH python 
  --squeeze-first False \
  --factor-out True \
  --verbose debug \
- --save experiments/test \
  --nblocks 16 \
- --steps_per_epoch 100 \
- --save_every 2 \
- --vis-freq 90 \
- --nepochs 500 
+ --steps_per_epoch 25 \
+ --save_every 1 \
+ --vis-freq 10 \
+ --nepochs 2 \
+ --evaluate \
+ --resume experiments/center_0/models/most_recent_1_workers.pth \
+ --save_conv \
+ --deploy_samples 100 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ mpirun --host $hosts -map-by ppr:4:node -np 4 -x LD_LIBRARY_PATH -x PATH python -u train_img_horo.py \
+ --slide_format tif \
+ --slide_path '/nfs/managed_datasets/CAMELYON17/training/center_1/' \
+ --label_path '/nfs/managed_datasets/CAMELYON17/training' \
+ --valid_slide_path '/home/rubenh/color-information/templates' \
+ --valid_label_path '/home/rubenh/color-information/templates' \
+ --test_path '/home/rubenh/color-information/test' \
+ --bb_downsample 7 \
+ --log_dir experiments/center_1/ \
+ --img_size 512 \
+ --batch_tumor_ratio 1 \
+ --batch_size 1 \
+ --actnorm True \
+ --nbits 9 \
+ --act swish \
+ --update-freq 1 \
+ --n-exact-terms 8 \
+ --fc-end False \
+ --squeeze-first False \
+ --factor-out True \
+ --verbose debug \
+ --nblocks 16 \
+ --steps_per_epoch 25 \
+ --save_every 1 \
+ --vis-freq 10 \
+ --nepochs 2 
+ 
+ mpirun --host $hosts -map-by ppr:4:node -np 4 -x LD_LIBRARY_PATH -x PATH python -u train_img_horo.py \
+ --slide_format tif \
+ --slide_path '/nfs/managed_datasets/CAMELYON17/training/center_2/' \
+ --label_path '/nfs/managed_datasets/CAMELYON17/training' \
+ --valid_slide_path '/home/rubenh/color-information/templates' \
+ --valid_label_path '/home/rubenh/color-information/templates' \
+ --test_path '/home/rubenh/color-information/test' \
+ --bb_downsample 7 \
+ --log_dir experiments/center_2/ \
+ --img_size 512 \
+ --batch_tumor_ratio 1 \
+ --batch_size 1 \
+ --actnorm True \
+ --nbits 9 \
+ --act swish \
+ --update-freq 1 \
+ --n-exact-terms 8 \
+ --fc-end False \
+ --squeeze-first False \
+ --factor-out True \
+ --verbose debug \
+ --nblocks 16 \
+ --steps_per_epoch 25 \
+ --save_every 1 \
+ --vis-freq 10 \
+ --nepochs 2 
+ 
+ mpirun --host $hosts -map-by ppr:4:node -np 4 -x LD_LIBRARY_PATH -x PATH python -u train_img_horo.py \
+ --slide_format tif \
+ --slide_path '/nfs/managed_datasets/CAMELYON17/training/center_3/' \
+ --label_path '/nfs/managed_datasets/CAMELYON17/training' \
+ --valid_slide_path '/home/rubenh/color-information/templates' \
+ --valid_label_path '/home/rubenh/color-information/templates' \
+ --test_path '/home/rubenh/color-information/test' \
+ --bb_downsample 7 \
+ --log_dir experiments/center_3/ \
+ --img_size 512 \
+ --batch_tumor_ratio 1 \
+ --batch_size 1 \
+ --actnorm True \
+ --nbits 9 \
+ --act swish \
+ --update-freq 1 \
+ --n-exact-terms 8 \
+ --fc-end False \
+ --squeeze-first False \
+ --factor-out True \
+ --verbose debug \
+ --nblocks 16 \
+ --steps_per_epoch 25 \
+ --save_every 1 \
+ --vis-freq 10 \
+ --nepochs 2 
 
+mpirun --host $hosts -map-by ppr:4:node -np 4 -x LD_LIBRARY_PATH -x PATH python -u train_img_horo.py \
+ --slide_format tif \
+ --slide_path '/nfs/managed_datasets/CAMELYON17/training/center_4/' \
+ --label_path '/nfs/managed_datasets/CAMELYON17/training' \
+ --valid_slide_path '/home/rubenh/color-information/templates' \
+ --valid_label_path '/home/rubenh/color-information/templates' \
+ --test_path '/home/rubenh/color-information/test' \
+ --bb_downsample 7 \
+ --log_dir experiments/center_4/ \
+ --img_size 512 \
+ --batch_tumor_ratio 1 \
+ --batch_size 1 \
+ --actnorm True \
+ --nbits 9 \
+ --act swish \
+ --update-freq 1 \
+ --n-exact-terms 8 \
+ --fc-end False \
+ --squeeze-first False \
+ --factor-out True \
+ --verbose debug \
+ --nblocks 16 \
+ --steps_per_epoch 25 \
+ --save_every 1 \
+ --vis-freq 10 \
+ --nepochs 2 
+ 
 exit
 
 

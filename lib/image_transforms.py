@@ -4,6 +4,7 @@ import pdb
 import torch
 
 def RGB2HSD_GPU(X):
+    
     X = X.permute(0,2,3,1)
     eps = torch.tensor([np.finfo(float).eps]).cuda()
     X = torch.where(X==0,eps,X)
@@ -19,12 +20,15 @@ def RGB2HSD_GPU(X):
     cy = cy.unsqueeze(3)
             
     X_HSD = torch.cat((D,cx,cy),3)
-    
     return X_HSD.permute(0,3,1,2)
 
 
 def RGB2HSD(X):
-    eps = np.finfo(float).eps
+    """See appendix A and B van_der_laak_et_al_Cytometry_2000"""
+    assert X.max() > 50, "WARNING: RGB2HSD requires image in [0,255]"
+    # eps = np.finfo(float).eps
+    # above gave overflow
+    eps = 1e-10 
     X[np.where(X==0.0)] = eps
     
     OD = -np.log(X / 1.0)
@@ -53,7 +57,7 @@ def RGB2HSD(X):
 #     return X_RGB   
     
 def HSD2RGB_Numpy(X_HSD):
-    
+    """See appendix A van_der_laak_et_al_Cytometry_2000"""   
     X_HSD_0 = X_HSD[...,0]
     X_HSD_1 = X_HSD[...,1]
     X_HSD_2 = X_HSD[...,2]
@@ -66,7 +70,6 @@ def HSD2RGB_Numpy(X_HSD):
     
 
 def image_dist_transform(img_hsd, mu, std, gamma, mu_tmpl, std_tmpl, args):
-
     batch_size = args.batch_size
     img_norm = np.empty((batch_size,args.img_size, args.img_size, 3, args.nclusters))
     mu  = np.reshape(mu, [mu.shape[0] ,batch_size,1,1,3])
@@ -86,12 +89,11 @@ def image_dist_transform(img_hsd, mu, std, gamma, mu_tmpl, std_tmpl, args):
     
     img_norm[1] = np.maximum(np.minimum(img_norm[1], 2.0), -1.0)
     img_norm = np.squeeze(np.swapaxes(np.asarray(img_norm), 0, -1))
-    # pdb.set_trace()
     ## Transfer from HSD to RGB color coordinates
     X_conv = HSD2RGB_Numpy(img_norm[np.newaxis,...])
-    X_conv = np.minimum(X_conv,1.0)
+    X_conv = np.minimum(X_conv,255.0)
     X_conv = np.maximum(X_conv,0.0)
-    X_conv *= 255
+    # X_conv *= 255
     X_conv = X_conv.astype(np.uint8)
     return np.squeeze(X_conv)
 
