@@ -27,13 +27,13 @@ invertibility.
 
 
 <p align="center">
-<img  width="250" height="250" src=_images/im_tmpl_30.png> ==> <img  width="250" height="250" src=_images/im_gamma_30.png.png>
+<img  width="250" height="250" src=_images/im_tmpl_30.png> ==> <img  width="250" height="250" src=_images/im_gamma_30.png>
 
 
-<img  width="250" height="250" src=_images/im_test_30.png> ==> <img  width="250" height="250" src=_images/im_pi_30.png.png>
+<img  width="250" height="250" src=_images/im_test_30.png> ==> <img  width="250" height="250" src=_images/im_pi_30.png>
 
 
-<img  width="250" height="250" src=_images/im_test_30.png> ==> <img  width="250" height="250" src=_images/im_conv_30.png.png>
+<img  width="250" height="250" src=_images/im_test_30.png> ==> <img  width="250" height="250" src=_images/im_conv_30.png>
 </p>  
 > The tissue class membership, followed by conversion
 
