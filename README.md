@@ -325,6 +325,9 @@ mpirun --host $hosts -map-by ppr:4:node -np 1 -x LD_LIBRARY_PATH -x PATH python 
 
 - This will evaluate the checkpoint in experiments/test/models for 100 samples, and save visualisations in `experiments/test`.
 
+### Pretrained Checkpoints
+- See folder `checkpoints/` for pretrained checkpoints on CAMELYON17 medical center_[0 - 4]
+
 ### TODO
 - [x] Implement multi node framework (Horovod)
 
