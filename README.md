@@ -127,7 +127,7 @@ Install requirements:
 pip install -r requirements.txt
 ```
 
-Find hosts of job (on SLURM) set to `hosts` variable with `slots_per_host` slots available per worker:
+Find hosts of job (on SLURM) and set to `hosts` variable with `slots_per_host` slots available per worker:
 ```
 #!/bin/bash
 slots_per_host=4
@@ -140,7 +140,7 @@ hosts="${hosts%?}"
 echo $hosts
 ```
 
-Options:
+Set the appropriate options:
 
 ```
 mpirun --host $hosts -map-by ppr:4:node -np 1 -x LD_LIBRARY_PATH -x PATH python -u train_img_horo.py --help
