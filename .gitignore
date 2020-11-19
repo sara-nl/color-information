@@ -18,6 +18,7 @@
 *.h5
 *.tfrecords
 *.tif*
+*.xml*
 # Logging things
 *logs*
 *.v2
